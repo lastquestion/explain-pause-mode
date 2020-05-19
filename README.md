@@ -1,11 +1,11 @@
-## explain-pause
+## explain-pause-mode
 
 ### How to use
 ```
-(require-pause-mode t)
+(explain-pause-mode t)
 ```
 
-`require-pause-mode` is very lightweight; you can leave it running all the time. Or, if you prefer, you can turn it on and off when you notice Emacs acting slow.
+`explain-pause-mode` is very lightweight; you can leave it running all the time. Or, if you prefer, you can turn it on and off when you notice Emacs acting slow.
 
 When something takes a while (default: over **40ms**; this is configurable), you'll see the message:
 
@@ -13,8 +13,7 @@ When something takes a while (default: over **40ms**; this is configurable), you
 Emacs blocked for ...ms - check *explain-pause-log*
 ```
 
-At this point, you can check the buffer `*explain-pause-log*` to see what was slow and the information gathered. If the slowness occurs a number of times (configurable, see customizable varables) `explain-pause` will take a sampling
-profile and create a text report you can use to diagnose or send to package developers.
+At this point, you can check the buffer `*explain-pause-log*` to see what was slow and the information gathered. If the slowness occurs a number of times (configurable, see customizable varables) `explain-pause-mode` will take a sampling profile and create a text report you can use to diagnose or send to package developers.
 
 When a profile is gathered, you'll see the message:
 
@@ -58,8 +57,7 @@ the environment itself.
 
 Much of what I attempt here is based on experiences doing similar pause detection in Javascript runtimes. In fact, JS is quite similar to elisp running in emacs in many ways, including the concurrent execution model.
 
-One of the easiest ways of measuring pauses is to use a timer that schedules itself every N ms, and measures how long it took before it actually was allowed to execute. If the real wall clock time is much later then the requested time,
-"something" executed for so long that latency was impacted.
+One of the easiest ways of measuring pauses is to use a timer that schedules itself every N ms, and measures how long it took before it actually was allowed to execute. If the real wall clock time is much later then the requested time, "something" executed for so long that latency was impacted.
 
 This is one of the common mechanisms for measuring all sorts of platform level interruptions. However, it does not easily provide a way to see "what" actually causing that delay.
 
