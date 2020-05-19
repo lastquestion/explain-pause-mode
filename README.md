@@ -13,8 +13,7 @@ When something takes a while (default: over **40ms**; this is configurable), you
 Emacs blocked for ...ms - check *explain-pause-log*
 ```
 
-At this point, you can check the buffer `*explain-pause-log*` to see what was slow and the information gathered. If the slowness occurs a number of times (configurable, see customizable varables) `explain-pause-mode` will take a sampling
-profile and create a text report you can use to diagnose or send to package developers.
+At this point, you can check the buffer `*explain-pause-log*` to see what was slow and the information gathered. If the slowness occurs a number of times (configurable, see customizable varables) `explain-pause-mode` will take a sampling profile and create a text report you can use to diagnose or send to package developers.
 
 When a profile is gathered, you'll see the message:
 
