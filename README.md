@@ -37,6 +37,7 @@ It attemps to intelligently capture information into a log that ought to be usef
 With enough bug reports and data, I hope that togther we can improve the latency of emacs and the package ecosystem.
 
 (\*) sychronous means "code executing without ever yielding to the input-command loop"
+
 (\*) slow means "as a user, I pressed a key but emacs did not register or service that request quickly, and I became frustrated"
 
 ### How does this thing work?
