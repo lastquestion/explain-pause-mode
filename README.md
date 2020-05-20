@@ -1,4 +1,6 @@
 ## explain-pause-mode
+[See what's in development in the project board](https://github.com/lastquestion/explain-pause-mode/projects/1) | 
+[Feature requests, bug reports, issues](https://github.com/lastquestion/explain-pause-mode/issues)
 
 ### How to use
 ```
