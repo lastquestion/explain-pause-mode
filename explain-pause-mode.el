@@ -406,11 +406,11 @@ changed.)"
         (when was-profiled
           (explain--alert-profile command-set)))))
 
-  (defun explain--precommand-hook ()
+  (defun explain--pre-command-hook ()
     (setq before-buffer-list (buffer-list))
     (explain--enter-command (list real-this-command)))
 
-  (defun explain--postcommand-hook ()
+  (defun explain--post-command-hook ()
     (when executing-command
       (explain--exit-command (current-time) executing-command)
       (unless mini-buffer-enter-stack
@@ -452,10 +452,13 @@ changed.)"
   (defun explain--wrap-sit-for (original-sit-for &rest args)
     "Advise sit-for and measure how long we actually sat for. Increment
 the current sit-for-time with this value."
+    ;; this is kinda ugly. is this better then setq?
     (let ((before-snap (current-time)))
-      (apply original-sit-for args)
-      (let ((diff (explain--as-ms-exact (time-subtract nil before-snap))))
-        (setq sit-for-wait (+ diff sit-for-wait)))))
+      (let ((return-value (apply original-sit-for args)))
+        (let ((diff (explain--as-ms-exact (time-subtract nil before-snap))))
+          (setq sit-for-wait (+ diff sit-for-wait))
+          return-value))))
+
 
   (defun explain--generate-command-set (head)
     "Generate a new command-set based on the current executing command-set"
@@ -590,8 +593,8 @@ filters and sentinels."
   :lighter " explain-pause"
   :keymap nil
   (let
-      ((hooks '((pre-command-hook . explain--precommand-hook)
-                (post-command-hook . explain--postcommand-hook)
+      ((hooks '((pre-command-hook . explain--pre-command-hook)
+                (post-command-hook . explain--post-command-hook)
                 (minibuffer-setup-hook . explain--enter-minibuffer)
                 (minibuffer-exit-hook . explain--exit-minibuffer)))
        (advices '((run-with-idle-timer . explain--wrap-idle-timer-callback)
