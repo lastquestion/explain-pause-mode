@@ -196,17 +196,17 @@ blocking execution (or we think so, anyway)."
            (prin1-to-string ms-or-array))))
     (message "Emacs blocked for %s ms - check *explain-pause-log*" ms-str)))
 
-(defun explain--log-pause (diff sit-wait-ms command-set log-current-buffer buffer-difference)
+(defun explain--log-pause (diff read-wait-ms command-set log-current-buffer buffer-difference)
   "Log the pause to the log.
 
 DIFF is the ms duration of the pause.
-SIT-WAIT-MS is the ms duration of any sit-fors.
+READ-WAIT-MS is the ms duration of any read* functions.
 COMMAND-SET is the command-set that paused.
 if LOG-CURRENT-BUFFER or BUFFER-DIFFERENCE are not nil, they are logged.  These are buffer objects."
   ;; use sprintf, it's probably faster (...eh)
-  (let ((sit-wait-str
-         (if (> sit-wait-ms 0)
-             (format " (sit-for %s ms)" sit-wait-ms)
+  (let ((read-wait-str
+         (if (> read-wait-ms 0)
+             (format " (read-wait %s ms)" read-wait-ms)
            ""))
         (buffer-difference-str
          (if buffer-difference
@@ -221,7 +221,7 @@ if LOG-CURRENT-BUFFER or BUFFER-DIFFERENCE are not nil, they are logged.  These 
     (explain--log diff
                   (format "%d ms%s - %s%s%s\n"
                           diff
-                          sit-wait-str
+                          read-wait-str
                           commandset-str
                           current-buffer-str
                           buffer-difference-str))))
@@ -343,7 +343,7 @@ changed.)"
     ((executing-command nil)
      (before-command-snap nil)
      (before-buffer-list nil)
-     (sit-for-wait 0)
+     (read-for-wait 0)
      ;; the command context that we were running when we entered each level of minibuffer
      (mini-buffer-enter-stack '())
      (profiling-command nil))
@@ -375,7 +375,7 @@ changed.)"
     "Set the context so we can start a new measurement loop. Does not affect
  minibuffer context."
     (setq executing-command commands)
-    (setq sit-for-wait 0)
+    (setq read-for-wait 0)
     (when (explain--profile-p commands)
       (explain--start-profiling))
     (setq before-command-snap (current-time)))
@@ -383,7 +383,7 @@ changed.)"
   (defun explain--exit-command (now-snap command-set)
     "Finish running a measurement loop."
     (let* ((diff (- (explain--as-ms-exact (time-subtract now-snap before-command-snap))
-                    sit-for-wait))
+                    read-for-wait))
            (too-long (and (> diff explain-pause-blocking-too-long-ms)
                           (not (explain--excluded-command-p command-set))))
            (was-profiled profiling-command))
@@ -396,7 +396,7 @@ changed.)"
 
       (when (or too-long
                 explain-pause-log-all-input-loop)
-        (explain--log-pause diff sit-for-wait command-set t
+        (explain--log-pause diff read-for-wait command-set t
                             (-difference (buffer-list) before-buffer-list))
 
         ;; only increment if it was actually too long, not if it was overriden
@@ -449,16 +449,14 @@ changed.)"
 
   ;; it would be nice to wrap only the args, but we actually need to know exactly
   ;; how long we waited for...
-  (defun explain--wrap-sit-for (original-sit-for &rest args)
-    "Advise sit-for and measure how long we actually sat for. Increment
-the current sit-for-time with this value."
-    ;; this is kinda ugly. is this better then setq?
-    (let ((before-snap (current-time)))
-      (let ((return-value (apply original-sit-for args)))
-        (let ((diff (explain--as-ms-exact (time-subtract nil before-snap))))
-          (setq sit-for-wait (+ diff sit-for-wait))
-          return-value))))
-
+  (defun explain--wrap-read-key-family (original-func &rest args)
+    "Advise read key family functions and measure how long we actually sat for.
+Increment the current read-for-time with this value."
+    (let* ((before-snap (current-time))
+           (return-value (apply original-func args))
+           (diff (explain--as-ms-exact (time-subtract nil before-snap))))
+      (setq read-for-wait (+ diff read-for-wait))
+      return-value))
 
   (defun explain--generate-command-set (head)
     "Generate a new command-set based on the current executing command-set"
@@ -476,7 +474,7 @@ diff is less then the threshold."
       ;; push the original (bound) execution context as the current execution context
       ;; around the run of the original callback.
       ;; if executing-command is already set, we're inside a command-loop, and someone
-      ;; accept-process-output or sit-wait'ed, which is why we need to save/restore
+      ;; accept-process-output or sit-for'ed, which is why we need to save/restore
       (let ((original-execution-command executing-command)
             (was-profiled
              ;; only profile if we were not already profiling - we could be inside
@@ -600,7 +598,9 @@ filters and sentinels."
        (advices '((run-with-idle-timer . explain--wrap-idle-timer-callback)
                   (run-with-timer . explain--wrap-timer-callback)
                   (set-process-filter . explain--wrap-set-process-filter-callback)
-                  (set-process-sentinel . explain--wrap-set-process-sentinel-callback))))
+                  (set-process-sentinel . explain--wrap-set-process-sentinel-callback)))
+       (read-key-family '(read-key-sequence read-key-sequence-vector read-char
+                                            read-char-exclusive read-event)))
   (cond
    (explain-pause-mode
     (explain--command-loop-reset)
@@ -609,12 +609,15 @@ filters and sentinels."
       (add-hook (car hook) (cdr hook)))
     (dolist (advice advices)
       (advice-add (car advice) :filter-args (cdr advice)))
-    (advice-add 'sit-for :around #'explain--wrap-sit-for)
+    (dolist (read-key-func read-key-family)
+      (advice-add read-key-func :around #'explain--wrap-read-key-family))
     (dolist (func '(make-process make-pipe-process make-network-process))
       (advice-add func :filter-args #'explain--wrap-make-process-sentinel-filter-callback)))
    (t
     (dolist (func '(make-process make-pipe-process make-network-process))
       (advice-remove func #'explain--wrap-make-process-sentinel-filter-callback))
+    (dolist (read-key-func read-key-family)
+      (advice-remove read-key-func #'explain--wrap-read-key-family))
     (dolist (advice advices)
       (advice-remove (car advice) (cdr advice)))
     (dolist (hook hooks)
