@@ -2,6 +2,10 @@
 [See what's in development in the project board](https://github.com/lastquestion/explain-pause-mode/projects/1) | 
 [Feature requests, bug reports, issues](https://github.com/lastquestion/explain-pause-mode/issues)
 
+*v0.2* major features roadmap: 
+  * [`top` for commands](https://github.com/lastquestion/explain-pause-mode/issues/4)
+  * [less obtrusive and configurable messages](https://github.com/lastquestion/explain-pause-mode/issues/13)
+
 ### How to use
 ```
 (explain-pause-mode t)
