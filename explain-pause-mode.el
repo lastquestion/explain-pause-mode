@@ -94,6 +94,10 @@ the buffer size (but you will lose the current profiles)."
   (-let [(high-seconds low-seconds microseconds) time]
     (+ (* (+ (* high-seconds 65536) low-seconds) 1000) (/ microseconds 1000))))
 
+(defun explain--escape-format (str)
+  "Escape a string so that there are no format specifiers within it."
+  (replace-regexp-in-string "%" "%%" str t t))
+
 ;; logging functions
 (let ((explain--log-buffer nil))
   (defun explain--get-log-buffer ()
@@ -175,10 +179,15 @@ the minibuffer is closed."
 
 (defun explain--function-as-string (cmd)
   "Generate a human readable string for a command CMD that might be bytecode.
-Otherwise print it as a string."
-  (if (byte-code-function-p cmd)
-      (format "<bytecode> (%s, %s)" (aref cmd 2) (documentation cmd))
-    (prin1-to-string cmd t)))
+Otherwise print it as a string. Escape any characters within it that would
+appear to be format specifiers."
+  (explain--escape-format
+   (if (byte-code-function-p cmd)
+       ;; item 2 is "constants",
+       ;; "The vector of Lisp objects referenced by the byte code. These include
+       ;; symbols used as function names and variable names."
+       (format "<bytecode> (%s, %s)" (aref cmd 2) (documentation cmd))
+    (prin1-to-string cmd t))))
 
 (defun explain--command-set-as-string (command-set)
   "Format a COMMAND-SET as a human readable string.
