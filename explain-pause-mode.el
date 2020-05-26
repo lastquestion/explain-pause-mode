@@ -3,7 +3,6 @@
 ;; Copyright (C) 2020 Lin Xu
 
 ;; Author: Lin Xu <lim@lastquestion.org>
-;; Package-Requires: ((dash "2.12.0"))
 ;; Version: 0.1
 ;; Created: May 18, 2020
 ;; Keywords: performance speed config
@@ -39,7 +38,7 @@
 
 ;;; Code:
 
-(require 'dash)
+(require 'seq)
 (require 'profiler)
 
 ;; customizable behavior
@@ -108,7 +107,7 @@ not just slow commands.")
 ;; logging functions
 (defun explain--as-ms-exact (time)
   "Returns the TIME object in exact milliseconds, ignoring picoseconds."
-  (-let [(high-seconds low-seconds microseconds) time]
+  (seq-let [high-seconds low-seconds microseconds] time
     (+ (* (+ (* high-seconds 65536) low-seconds) 1000) (/ microseconds 1000))))
 
 (defun explain-pause--float-2-fixed (val)
@@ -316,18 +315,17 @@ changed.)"
          (explain--profile-report-header
           (when (ring-empty-p profiles)
             "No slow profile entries yet."))
-         (-each (ring-elements profiles)
-           (lambda (profile)
-             (-let (((time-stamp diff command-set profile) profile))
-               ;; TODO maybe a nicer table or something? There's only a handful of items though.
-               (insert (format "Slow profile report\n  Time: %s\n  Command: %s\n  Duration: %d ms\n\n"
-                               (current-time-string time-stamp)
-                               (explain--command-set-as-string command-set)
-                               diff))
-               (insert-text-button "[ View profile ]"
-                                   'action #'explain--profile-report-click-profile
-                                   'profile profile)
-               (insert "\n\n")))))))
+         (dolist (profile (ring-elements profiles))
+           (seq-let [time-stamp diff command-set profile] profile
+             ;; TODO maybe a nicer table or something? There's only a handful of items though.
+             (insert (format "Slow profile report\n  Time: %s\n  Command: %s\n  Duration: %d ms\n\n"
+                             (current-time-string time-stamp)
+                             (explain--command-set-as-string command-set)
+                             diff))
+             (insert-text-button "[ View profile ]"
+                                 'action #'explain--profile-report-click-profile
+                                 'profile profile)
+             (insert "\n\n"))))))
      (t
       (ring-elements profiles))))
 
@@ -1185,7 +1183,7 @@ else the INTERVAL is seconds between refreshes."
       (when (or too-long
                 explain-pause-log-all-input-loop)
         (explain--log-pause diff read-for-wait command-set t
-                            (-difference (buffer-list) before-buffer-list))
+                            (seq-difference (buffer-list) before-buffer-list #'eq))
 
         ;; only increment if it was actually too long, not if it was overriden
         (when too-long
@@ -1328,11 +1326,18 @@ generated.  ORIGINAL-CALLBACK is the function to be wrapped."
 
 (defun explain--wrap-make-process-sentinel-filter-callback (args)
   "Wrap the sentinel and process arguments inside ARGS to `make-process', if any."
-  (-let* (((&plist :filter original-filter :sentinel original-sentinel) args)
-          (new-args (-clone args))
-          (wrapped-filter (explain--generate-wrapper (explain--generate-command-set 'process-filter) original-filter))
-          (wrapped-sentinel (explain--generate-wrapper (explain--generate-command-set 'sentinel-filter) original-sentinel)))
-    (when original-filter
+  (let* ((original-filter (plist-get args :filter))
+         (original-sentinel (plist-get args :sentinel))
+         (wrapped-filter
+          (when original-filter
+            (explain--generate-wrapper (explain--generate-command-set 'process-filter)
+                                       original-filter)))
+         (wrapped-sentinel
+          (when original-sentinel
+            (explain--generate-wrapper (explain--generate-command-set 'sentinel-filter)
+                                       original-sentinel)))
+         (new-args (copy-sequence args)))
+    (when wrapped-filter
       (setq new-args (plist-put new-args :filter wrapped-filter)))
     (when original-sentinel
       (setq new-args (plist-put new-args :sentinel wrapped-sentinel)))
@@ -1340,26 +1345,30 @@ generated.  ORIGINAL-CALLBACK is the function to be wrapped."
 
 (defun explain--wrap-set-process-filter-callback (args)
   "Advise that modifies the arguments ARGS to `process-filter' by wrapping the callback."
-  (-let* (((arg-process original-callback) args)
-          (wrapped-filter (explain--generate-wrapper (explain--generate-command-set 'process-filter) original-callback)))
-    (list arg-process wrapped-filter)))
+  (seq-let [arg-process original-callback] args
+    (list arg-process
+          (explain--generate-wrapper (explain--generate-command-set 'process-filter) original-callback))))
 
 (defun explain--wrap-set-process-sentinel-callback (args)
   "Advise that modifies the arguments ARGS to `process-sentinel' by wrapping the callback."
-  (-let* (((arg-process original-callback) args)
-          (wrapped-filter (explain--generate-wrapper (explain--generate-command-set 'sentinel-filter) original-callback)))
-    (list arg-process wrapped-filter)))
+  (seq-let [arg-process original-callback] args
+    (list arg-process
+          (explain--generate-wrapper (explain--generate-command-set 'sentinel-filter) original-callback))))
 
 (defun explain--wrap-idle-timer-callback (args)
   "Advise that modifies the arguments ARGS to `run-with-idle-timer' by wrapping the callback."
-  (-insert-at 2 #'explain--measure-idle-timer-callback args))
+  (append (seq-take args 2)
+          (cons #'explain--measure-idle-timer-callback
+                (seq-drop args 2))))
 
 (defun explain--wrap-timer-callback (args)
   "Advise that modifies the arguments ARGS to `run-with-timer' by wrapping the callback."
   (let ((original-callback (nth 2 args)))
     (if (eq original-callback #'explain--alert-delays-timer)
         args
-      (-insert-at 2 #'explain--measure-timer-callback args))))
+      (append (seq-take args 2)
+              (cons #'explain--measure-timer-callback
+                    (seq-drop args 2))))))
 
 ;;;###autoload
 (define-minor-mode explain-pause-mode
