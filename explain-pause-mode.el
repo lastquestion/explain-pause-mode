@@ -148,7 +148,7 @@ to the delayed duration list."
     (explain--write-to-log str)
     (when explain-pause-alert-via-message
       (if (active-minibuffer-window)
-          (setq delayed-notifications (-snoc delayed-notifications pause-ms))
+          (push pause-ms delayed-notifications)
         (explain--alert-delays pause-ms))))
 
   (defun explain--alert-delays-timer ()
@@ -220,7 +220,7 @@ blocking execution (or we think so, anyway)."
   "Display an alert message of duration(s) MS-OR-ARRAY."
   (let ((ms-str
          (if (listp ms-or-array)
-             (mapconcat #'prin1-to-string ms-or-array ", ")
+             (mapconcat #'prin1-to-string (reverse ms-or-array) ", ")
            (prin1-to-string ms-or-array))))
     (message "Emacs blocked for %s ms - check *explain-pause-log*" ms-str)))
 
