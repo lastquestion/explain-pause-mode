@@ -44,40 +44,48 @@
 ;; customizable behavior
 (defgroup explain-pause nil
   "Explain pauses in Emacs"
-  :prefix "explain-pause-")
+  :prefix "explain-pause-"
+  :group 'development)
 
-(defcustom explain-pause-blocking-too-long-ms 40
-  "When some work in Emacs takes longer then this many milliseconds, explain-pause will tell you."
-  :type 'integer)
+(defgroup explain-pause-logging nil
+  "Explain pause logging"
+  :prefix "explain-pause-log-"
+  :group 'explain-pause)
 
-(defcustom explain-pause-log-all-input-loop nil
-  "Should all command loop executions be logged? WARNING: Very noisy!"
-  :type 'boolean)
+(defgroup explain-pause-alerting nil
+  "Explain pause alerting"
+  :prefix "explain-pause-alert-"
+  :group 'explain-pause)
 
-(defcustom explain-pause-log-all-timers nil
-  "Should all timer executions be logged? WARNING: Very noisy!"
-  :type 'boolean)
+(defgroup explain-pause-profiling nil
+  "Explain pause profiling"
+  :prefix "explain-pause-profile-"
+  :group 'explain-pause)
 
-(defcustom explain-pause-log-all-process-io nil
-  "Should all process filter executions be logged? WARNING: Very noisy!"
-  :type 'boolean)
+;; main behaviors
 
-(defcustom explain-pause-alert-via-message t
-  "Should explain-pause alert you to long pauses in the mini-buffer?"
-  :type 'boolean)
+(defcustom explain-pause-slow-too-long-ms 40
+  "How long must some activity take before explain-pause considers it slow, in ms?"
+  :type 'integer
+  :group 'explain-pause)
 
-(defcustom explain-pause-profile-blocking-threshold 3
-  "How many times does a blocking command or function have to happen before it is profiled?"
-  :type 'integer)
+;; profiling behaviors
+(defcustom explain-pause-profile-slow-threshold 3
+  "Explain-pause will profile a slow activity once it has executed slowly this
+many times."
+  :type 'integer
+  :group 'explain-pause-profiling)
 
 (defcustom explain-pause-profile-enabled t
-  "Should explain-pause profile blocking work when it occurs enough times?"
-  :type 'boolean)
+  "Should explain-pause profile slow activities at all?"
+  :type 'boolean
+  :group 'explain-pause-profiling)
 
 (defcustom explain-pause-profile-cpu-sampling-interval 200000
   "The CPU sampling interval when the profiler is activated in microseconds.
 The default value is 2ms."
-  :type 'integer)
+  :type 'integer
+  :group 'explain-pause-profiling)
 
 (defcustom explain-pause-profile-saved-profiles 5
   "The number of CPU profiles to save, after which the oldest is removed.
@@ -87,13 +95,33 @@ the buffer size (but you will lose the current profiles)."
   :set (lambda (symbol val)
          (set-default symbol val)
          (explain-pause-profiles-clear))
-  :initialize 'custom-initialize-default)
+  :initialize 'custom-initialize-default
+  :group 'explain-pause-profiling)
 
 (defcustom explain-pause-top-auto-refresh-interval 2
-  "How often `explain-pause-top' mode buffers refresh themselves by default.
-If this is nil, they do not automatically refresh. You can control this on a
-per buffer basis by calling `explain-pause-top-auto-refresh'."
-  :type 'integer)
+  "How often `explain-pause-top' mode buffers refresh themselves by default,
+in seconds. This can be a fraction of a second. If this is nil, they
+do not automatically refresh. You can control this on a per buffer basis
+by calling `explain-pause-top-auto-refresh'."
+  :type '(choice (number :tag "Interval (seconds)")
+                 (const :tag "Never" nil))
+  :group 'explain-pause)
+
+;; developer logging behaviors
+(defcustom explain-pause-log-all-input-loop nil
+  "Should all command loop executions be logged? WARNING: Very noisy!"
+  :type 'boolean
+  :group 'explain-pause-logging)
+
+(defcustom explain-pause-log-all-timers nil
+  "Should all timer executions be logged? WARNING: Very noisy!"
+  :type 'boolean
+  :group 'explain-pause-logging)
+
+(defcustom explain-pause-log-all-process-io nil
+  "Should all process filter executions be logged? WARNING: Very noisy!"
+  :type 'boolean
+  :group 'explain-pause-logging)
 
 ;; public hooks
 (defvar explain-pause-measured-command-hook nil
@@ -139,47 +167,121 @@ not just slow commands.")
       (insert "\n") ;; always add a new line between lines
       (goto-char (point-max)))))
 
-(let ((delayed-notifications '())
-      (delayed-notification-timer nil))
-  (defun explain--log (pause-ms str)
-    "Log the message to the explain buffer at the end, optionally with a
-short message to the echo area. If the minibuffer is in use, add the duration
-to the delayed duration list."
-    (explain--write-to-log str)
-    (when explain-pause-alert-via-message
-      (if (active-minibuffer-window)
-          (push pause-ms delayed-notifications)
-        (explain--alert-delays pause-ms))))
+(defun explain-pause-mode-change-alert-style (new-style)
+  "Change the alerting style to NEW-STYLE. Note that this does not change the
+customizable variable `explain-pause-alert-style'.
 
-  (defun explain--alert-delays-timer ()
-    "display the delayed notifications, unless we're back in a minibuffer,
-in which case do nothing; the next exit will reschedule."
-    (unless (active-minibuffer-window)
-      (explain--alert-delays delayed-notifications)
-      (setq delayed-notifications '())
-      (setq delayed-notification-timer nil)))
+NEW-STYLE can be:
+'developer, where all alerts are shown;
+'normal, when alerts are shown when more then 5 have occurred, and not
+within 15 minutes of the last time an alert was shown; or
+'silent, aka never."
+  (let ((kinds
+         '((developer . explain-pause-mode--log-alert-developer)
+           (normal . explain-pause-mode--log-alert-normal))))
+    (dolist (kind kinds)
+      (remove-hook 'explain-pause-measured-command-hook (cdr kind)))
 
-  (defun explain--delayed-logs-reset ()
-    (setq delayed-notifications '())
-    (when delayed-notification-timer
-      (cancel-timer delayed-notification-timer)
-      (setq delayed-notification-timer nil)))
+    (let ((new-hook (assq new-style kinds)))
+      (when new-hook
+        (add-hook 'explain-pause-measured-command-hook (cdr new-hook))))))
 
-  (defun explain--schedule-delayed-logs ()
-    "Schedule or reschedule the delayed logs timer. Should be called when
-the minibuffer is closed."
-    (when delayed-notifications
-      (when delayed-notification-timer
-        (cancel-timer delayed-notification-timer))
-      (setq delayed-notification-timer (run-with-timer 0.5 nil #'explain--alert-delays-timer)))))
+(let ((notification-count 0)
+      (last-notified (current-time))
+      (alert-timer nil))
+  (defun explain-pause-mode--log-alert-normal (ms read-ms command-set was-profiled)
+    "Notify the user of alerts when at least `explain-pause-alert-normal-minimum-count'
+alerts have occurred, AND the time since the last notification (or startup)
+is greater then `explain-pause-alert-normal-interval' minutes."
+    (when (> ms explain-pause-slow-too-long-ms)
+      (setq notification-count (1+ notification-count))
+      (when (and (>= notification-count explain-pause-alert-normal-minimum-count)
+                 (> (float-time (time-subtract nil last-notified))
+                    (* explain-pause-alert-normal-interval 60))
+                 (not alert-timer))
+        (setq alert-timer
+              (run-with-idle-timer 1 nil
+                                   #'explain-pause-mode--log-alert-normal-display)))))
 
-(defun explain--alert-profile (commandset)
-  "Write a log about the profile that just occurred for COMMANDSET, and alert it, too."
-  (let ((msg
-         (format "Blocking call %s was profiled! Run `explain-pause-profiles' to learn more"
-                 (explain--command-set-as-string commandset))))
-    (explain--write-to-log msg t)
-    (message msg)))
+  (defun explain-pause-mode--log-alert-normal-display ()
+    "Display the normal alert to the user but only if the minibuffer is not
+active. If it is open, do nothing; at some point later, the conditions will
+fire again and this timer will be called again."
+    (setq alert-timer nil)
+    ;; if we are not actively in the minibuffer, display our message
+    (when (not (minibufferp (current-buffer)))
+      (message "Emacs was slow %d times recently. Run `explain-pause-top' or check `*explain-pause-log*'" notification-count)
+      (setq notification-count 0)
+      (setq last-notified (current-time)))))
+
+(let ((notifications '())
+      (profiled-count 0)
+      (alert-timer nil))
+  (defun explain-pause-mode--log-alert-developer (ms read-ms command-set was-profiled)
+    "Log all slow and profiling alerts in developer mode. They are gathered until
+run-with-idle-timer allows an idle timer to run, and then they are printed
+to the minibuffer with a 2 second sit-for."
+    (when (> ms explain-pause-slow-too-long-ms)
+      (push ms notifications)
+      (when was-profiled
+        (setq profiled-count (1+ profiled-count)))
+      (unless alert-timer
+        (setq alert-timer
+              (run-with-idle-timer 0.5 nil
+                                   #'explain-pause-mode--log-alert-developer-display)))))
+
+  (defun explain-pause-mode--log-alert-developer-display ()
+    "Display the last set of notifications in the echo area when the minibuffer is
+not active."
+    (if (minibufferp (current-buffer))
+        ;; try again
+        (setq alert-timer
+              (run-with-idle-timer 0.5 nil
+                                   #'explain-pause-mode--log-alert-developer-display))
+      ;; ok, let's draw
+      (message "Emacs was slow: %s ms%s"
+               (mapconcat #'number-to-string notifications ", ")
+               (if (> profiled-count 0)
+                   (format " of which %d were profiled. Run `explain-pause-profiles' to learn more."
+                           profiled-count)
+                 ". Run `explain-pause-top' or check `*explain-pause-log*'"))
+      ;; reset so more notifications can pile up while we wait
+      (setq notifications '())
+      (setq profiled-count 0)
+      (sit-for 2)
+      (message nil)
+      ;; don't let us get rescheduled until we're really done.
+      (setq alert-timer nil))))
+
+;; logging customization
+;; depressingly can't define it at the top because `explain-pause-mode-change-alert-style
+;; isn't defined yet...
+(defcustom explain-pause-alert-style 'normal
+  "How often should explain-pause alert you about slow pauses in the mini-buffer?
+
+Changing this value immediately adjusts the behavior. You can do this manually by
+calling `explain-pause-mode-change-alert-style' directly if you wish. Note that
+calling that function does not change this value."
+  :type '(choice (const :tag "Always" developer)
+                 (const :tag "Every now and then" normal)
+                 (const :tag "Never" silent))
+  :group 'explain-pause
+  :set (lambda (symbol val)
+         (set-default symbol val)
+         (explain-pause-mode-change-alert-style val)))
+
+(defcustom explain-pause-alert-normal-interval 15
+  "What is the minimum amount of time, in minutes, between alerts when
+`explain-pause-alert-style' is normal? You can put a fractional value if you
+wish."
+  :type 'number
+  :group 'explain-pause-alerting)
+
+(defcustom explain-pause-alert-normal-minimum-count 5
+  "How many slow events must occur before `explain-pause' alerts you when
+`explain-pause-alert-style' is normal?"
+  :type 'integer
+  :group 'explain-pause-alerting)
 
 ;; TODO perhaps this should also display minor modes? probably. minor modes can be interact
 ;; weirdly and become slow.
@@ -246,7 +348,7 @@ if LOG-CURRENT-BUFFER or BUFFER-DIFFERENCE are not nil, they are logged.  These 
            ""))
         (commandset-str (explain--command-set-as-string command-set)))
 
-    (explain--log diff
+    (explain--write-to-log
                   (format "%d ms%s - %s%s%s\n"
                           diff
                           read-wait-str
@@ -340,7 +442,7 @@ changed.)"
       (and explain-pause-profile-enabled
            (or (eq count -1) ;; forced
                (>= count
-                   explain-pause-profile-blocking-threshold)))))
+                   explain-pause-profile-slow-threshold)))))
 
   (defun explain--store-profile (time diff command-set profile)
     "Store the profiling information and reset the profile counter."
@@ -1064,7 +1166,7 @@ the hook is added."
       (add-hook 'explain-pause-measured-command-hook
                 #'explain-pause-top--consume-commands)))
 
-  (defun explain-pause-top--consume-commands (ms read-ms command-set)
+  (defun explain-pause-top--consume-commands (ms read-ms command-set was-profiled)
     "Consume the event from the stream and add it into the shared store between
 all `explain-pause-top' buffers."
     (let ((entry (gethash command-set command-statistics nil))
@@ -1166,7 +1268,7 @@ else the INTERVAL is seconds between refreshes."
     (let* ((diff (- (explain--as-ms-exact (time-subtract now-snap before-command-snap))
                     read-for-wait))
            (excluded (explain--excluded-command-p command-set))
-           (too-long (and (> diff explain-pause-blocking-too-long-ms)
+           (too-long (and (> diff explain-pause-slow-too-long-ms)
                           (not excluded)))
            (was-profiled profiling-command))
 
@@ -1178,7 +1280,8 @@ else the INTERVAL is seconds between refreshes."
 
       (unless excluded
         (run-hook-with-args 'explain-pause-measured-command-hook
-                            diff read-for-wait command-set))
+                            diff read-for-wait command-set
+                            (and was-profiled too-long)))
 
       (when (or too-long
                 explain-pause-log-all-input-loop)
@@ -1187,10 +1290,7 @@ else the INTERVAL is seconds between refreshes."
 
         ;; only increment if it was actually too long, not if it was overriden
         (when too-long
-          (explain--increment-profile command-set))
-
-        (when was-profiled
-          (explain--alert-profile command-set)))))
+          (explain--increment-profile command-set)))))
 
   (defun explain--pre-command-hook ()
     (setq before-buffer-list (buffer-list))
@@ -1199,10 +1299,6 @@ else the INTERVAL is seconds between refreshes."
   (defun explain--post-command-hook ()
     (when executing-command
       (explain--exit-command (current-time) executing-command)
-      (unless mini-buffer-enter-stack
-        ;; if the minibuffer stack is empty, we can expect that after this loop
-        ;; completes, we can display stuff. schedule the delayed notifications:
-        (explain--schedule-delayed-logs))
       (setq executing-command nil)))
 
   (defun explain--enter-minibuffer ()
@@ -1277,7 +1373,7 @@ diff is less then the threshold."
           (apply measure-func args)
           (let* ((now-snap (current-time))
                  (diff (explain--as-ms-exact (time-subtract now-snap before-snap)))
-                 (too-long (> diff explain-pause-blocking-too-long-ms)))
+                 (too-long (> diff explain-pause-slow-too-long-ms)))
 
             (when was-profiled
               (let ((profile (explain--save-and-stop-profiling)))
@@ -1287,17 +1383,15 @@ diff is less then the threshold."
             (setq executing-command original-execution-command)
 
             (run-hook-with-args 'explain-pause-measured-command-hook
-                                diff 0 command-set)
+                                diff 0 command-set
+                                (and was-profiled too-long))
 
             (when (or too-long
                       (symbol-value diff-override))
               (explain--log-pause diff 0 command-set nil nil)
 
               (when too-long
-                (explain--increment-profile command-set))
-
-              (when was-profiled
-                (explain--alert-profile command-set)))))))))
+                (explain--increment-profile command-set)))))))))
 
 ;; timer or process io hooks
 (defun explain--generate-wrapper (command-set original-callback)
@@ -1357,18 +1451,19 @@ generated.  ORIGINAL-CALLBACK is the function to be wrapped."
 
 (defun explain--wrap-idle-timer-callback (args)
   "Advise that modifies the arguments ARGS to `run-with-idle-timer' by wrapping the callback."
-  (append (seq-take args 2)
-          (cons #'explain--measure-idle-timer-callback
-                (seq-drop args 2))))
+  (let ((original-callback (nth 2 args)))
+    ;; TODO this can be removed once we get sit-for calculated for timers (#31)
+    (if (eq original-callback #'explain-pause-mode--log-alert-developer-display)
+        args
+      (append (seq-take args 2)
+              (cons #'explain--measure-idle-timer-callback
+                    (seq-drop args 2))))))
 
 (defun explain--wrap-timer-callback (args)
   "Advise that modifies the arguments ARGS to `run-with-timer' by wrapping the callback."
-  (let ((original-callback (nth 2 args)))
-    (if (eq original-callback #'explain--alert-delays-timer)
-        args
-      (append (seq-take args 2)
-              (cons #'explain--measure-timer-callback
-                    (seq-drop args 2))))))
+  (append (seq-take args 2)
+          (cons #'explain--measure-timer-callback
+                (seq-drop args 2))))
 
 ;;;###autoload
 (define-minor-mode explain-pause-mode
@@ -1404,7 +1499,6 @@ filters and sentinels."
   (cond
    (explain-pause-mode
     (explain--command-loop-reset)
-    (explain--delayed-logs-reset)
     (dolist (hook hooks)
       (add-hook (car hook) (cdr hook)))
     (dolist (advice advices)
