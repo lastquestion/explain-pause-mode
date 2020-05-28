@@ -210,7 +210,7 @@ fire again and this timer will be called again."
     (setq alert-timer nil)
     ;; if we are not actively in the minibuffer, display our message
     (when (not (minibufferp (current-buffer)))
-      (message "Emacs was slow %d times recently. Run `explain-pause-top' or check `*explain-pause-log*'" notification-count)
+      (message "Emacs was slow %d times recently. Run `explain-pause-top' or check `*explain-pause-log*' to learn more." notification-count)
       (setq notification-count 0)
       (setq last-notified (current-time)))))
 
@@ -244,7 +244,7 @@ not active."
                (if (> profiled-count 0)
                    (format " of which %d were profiled. Run `explain-pause-profiles' to learn more."
                            profiled-count)
-                 ". Run `explain-pause-top' or check `*explain-pause-log*'"))
+                 ". Run `explain-pause-top' or check `*explain-pause-log*' to learn more."))
       ;; reset so more notifications can pile up while we wait
       (setq notifications '())
       (setq profiled-count 0)
