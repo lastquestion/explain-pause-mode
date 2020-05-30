@@ -1,8 +1,7 @@
-;;; explain-pause-mode.el --- explain emacs pauses -*- lexical-binding: t; -*-
-
+;;; explain-pause-mode.el --- explain emacs pauses -*- lexical-binding: t; emacs-lisp-docstring-fill-column: 80; fill-column: 80; -*-
 ;; Copyright (C) 2020 Lin Xu
 
-;; Author: Lin Xu <lim@lastquestion.org>
+;; Author: Lin Xu <lin@lastquestion.org>
 ;; Version: 0.1
 ;; Created: May 18, 2020
 ;; Keywords: performance speed config
@@ -141,10 +140,6 @@ not just slow commands.")
 (defun explain-pause--float-2-fixed (val)
   "Turn a floating point value into a fixed 2 digit string."
   (format "%.2f" val))
-
-(defun explain--escape-format (str)
-  "Escape a string so that there are no format specifiers within it."
-  (replace-regexp-in-string "%" "%%" str t t))
 
 (let ((explain--log-buffer nil))
   (defun explain--get-log-buffer ()
@@ -298,24 +293,51 @@ wish."
                  (explain--buffer-as-string)))
            buffers ", "))
 
-(defun explain--function-as-string (cmd)
-  "Generate a human readable string for a command CMD that might be bytecode.
-Otherwise print it as a string. Escape any characters within it that would
-appear to be format specifiers."
-  (explain--escape-format
-   (if (byte-code-function-p cmd)
-       ;; item 2 is "constants",
-       ;; "The vector of Lisp objects referenced by the byte code. These include
-       ;; symbols used as function names and variable names."
-       (format "<bytecode> (%s, %s)" (aref cmd 2) (documentation cmd))
-    (prin1-to-string cmd t))))
+(defun explain-pause--sanitize-minibuffer (contents)
+  "Sanitize the minibuffer contents so it does not contain extra whitespace
+and especially newlines."
+  (replace-regexp-in-string "[\n\t ]+" " " contents))
 
-(defun explain--command-set-as-string (command-set)
+(defun explain-pause--command-as-string (cmd)
+  "Generate a human readable string for a command CMD.
+
+Normally this is a symbol, when we are in a command loop, but in timers, process
+filters, etc. this might be a lambda or a bytecompiled lambda. In those cases,
+also handle if the forms are wrapped by closure. For bytecompiled code, use the
+references as the best information available. For lambdas and closures, hope
+that the argument names are clarifying. We also allow strings for things that go
+through minibuffer invocations. Note that in elisp, symbols may have %! So
+e.g. this function may generate strings with format specifiers in them."
+  (cond
+   ((stringp cmd) cmd)
+   ((symbolp cmd) (symbol-name cmd))
+   ((byte-code-function-p cmd)
+    ;; "The vector of Lisp objects referenced by the byte code. These include
+    ;; symbols used as function names and variable names."
+    ;; list only symbol references:
+    (let ((filtered-args
+           (seq-filter #'symbolp (aref cmd 2))))
+      (format "<bytecode> (references: %s)" filtered-args)))
+   ((not (listp cmd))
+    ;; something weird. This should not happen.
+    "Unknown (please file a bug)")
+   ;; closure. hypothetically, this is defined as a implementation detail,
+   ;; but we'll read it anyway...
+   ((eq (car cmd) 'closure)
+    (format "<closure> (arg-list: %s)" (nth 2 cmd)))
+   ;; lambda. directly read the arg-list:
+   ((eq (car cmd) 'lambda)
+    (format "<lambda> (arg-list: %s)" (nth 1 cmd)))
+   (t
+    "Unknown (please file a bug)")))
+
+(defun explain-pause--command-set-as-string (command-set)
   "Format a COMMAND-SET as a human readable string.
+
 A command set is a list of commands that represent the context that lead to the
 blocking execution (or we think so, anyway)."
   (mapconcat
-   #'explain--function-as-string
+   #'explain-pause--command-as-string
    command-set ", "))
 
 (defun explain--alert-delays (ms-or-array)
@@ -346,7 +368,8 @@ if LOG-CURRENT-BUFFER or BUFFER-DIFFERENCE are not nil, they are logged.  These 
          (if log-current-buffer
              (format " [%s]" (explain--buffer-as-string))
            ""))
-        (commandset-str (explain--command-set-as-string command-set)))
+        ;; safe; this is formatted as "%s" in next line
+        (commandset-str (explain-pause--command-set-as-string command-set)))
 
     (explain--write-to-log
                   (format "%d ms%s - %s%s%s\n"
@@ -422,7 +445,7 @@ changed.)"
              ;; TODO maybe a nicer table or something? There's only a handful of items though.
              (insert (format "Slow profile report\n  Time: %s\n  Command: %s\n  Duration: %d ms\n\n"
                              (current-time-string time-stamp)
-                             (explain--command-set-as-string command-set)
+                             (explain-pause--command-set-as-string command-set)
                              diff))
              (insert-text-button "[ View profile ]"
                                  'action #'explain--profile-report-click-profile
@@ -766,7 +789,8 @@ and update REQUESTED-WIDTHS with their widths."
         (prev-state (explain-pause-top--table-display-entry-prev-state item)))
 
     ;; TODO data-driven
-    (dolist (item '((3 0 explain--command-set-as-string)
+    ;; command-set is safe, all inputs are always formatted in specifiers
+    (dolist (item '((3 0 explain-pause--command-set-as-string)
                     (2 1 explain-pause--float-2-fixed)
                     (1 2 number-to-string)
                     (0 3 number-to-string)))
@@ -1320,7 +1344,8 @@ else the INTERVAL is seconds between refreshes."
          (minibuffer-command (if (eq this-command 'minibuffer-keyboard-quit)
                                  "from quitting minibuffer"
                                (format "from mini-buffer (`%s`)"
-                                       (minibuffer-contents-no-properties))))
+                                       (explain-pause--sanitize-minibuffer
+                                        (minibuffer-contents-no-properties)))))
          ;; pop off the command that started this minibuffer to begin with
          (exiting-minibuffer-command (pop mini-buffer-enter-stack))
          (prev-command-set (cons real-this-command exiting-minibuffer-command))
