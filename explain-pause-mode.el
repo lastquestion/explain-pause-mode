@@ -617,6 +617,8 @@ the width cannot be 0."
                        (window-hscroll)
                        (- (window-total-width) 1)))))
 
+      (force-mode-line-update)
+
       (setf (explain-pause-top--table-needs-resize table) nil)
       (setq layout-changed t))
 
@@ -1001,7 +1003,13 @@ adds '$' when there is more header either front or end."
 
          ;; the head padding, which only applies if we've negatively scrolled
          (head-padding (when (< start 0)
-                         (make-string (- start) ? ))))
+                         (make-string (- start) ? )))
+
+         ;; deal with left margins fringes and so on. actually this is a constant
+         ;; TODO: could we cache it?
+         (margin-padding (propertize
+                          " "
+                          'display (cons 'space (list :align-to 0)))))
 
     (when head-dots
       (if (< bounded-start header-length)
@@ -1023,7 +1031,8 @@ adds '$' when there is more header either front or end."
           ;; and we don't have space to insert a $. do nothing
           (setq end-dot-str nil))))
 
-    (concat head-padding
+    (concat margin-padding
+            head-padding
             head-dot-str
             (substring header bounded-start bounded-end)
             end-dot-str)))
@@ -1070,11 +1079,11 @@ on a per buffer basis by calling `explain-pause-top-auto-refresh'."
                    explain-pause-top--buffer-window-size-changed))
 
     (setq-local explain-pause-top--buffer-window-size-changed
-                (lambda (frame)
+                (lambda (_)
+                  ;; ignore frame, and recalculate the width across all frames
+                  ;; every time. we always need the biggest.
                   (explain-pause-top--buffer-update-width-from-windows
-                   this-buffer
-                   frame
-                   (get-buffer-window-list this-buffer))))
+                   this-buffer)))
 
     (explain-pause-top--pipe-commands 'add this-buffer))
 
@@ -1121,25 +1130,26 @@ on a per buffer basis by calling `explain-pause-top-auto-refresh'."
 
 (defun explain-pause-top--buffer-refresh ()
   "Refresh the current buffer - redraw the data at the current target-width"
-  (let ((inhibit-read-only t))
-    (save-excursion
-      (explain-pause-top--table-refresh explain-pause-top--buffer-table))))
+  ;; It's possible a refresh timer ran before/after we calculated size, if so,
+  ;; don't try to draw yet.
+  (unless
+      (eq (explain-pause-top--table-width explain-pause-top--buffer-table) 0)
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (explain-pause-top--table-refresh explain-pause-top--buffer-table)))))
 
 (defun explain-pause-top--buffer-window-config-changed ()
   "Buffer-local hook run when window config changed for a window showing
-this buffer. Update the width if it is wider then the current width."
-  (let ((this-width (window-max-chars-per-line))
-        (current-width (explain-pause-top--table-width
-                        explain-pause-top--buffer-table)))
-    (when (> this-width current-width)
-      (explain-pause-top--buffer-resize this-width))))
+this buffer. Call `explain-pause-top--buffer-update-width-from-windows'."
+  (explain-pause-top--buffer-update-width-from-windows (current-buffer)))
 
 (defun explain-pause-top--buffer-update-width-from-windows
-    (buffer updated-frame windows)
-  "Update the width of the target BUFFER with the widest width from WINDOWS,
-filtering WINDOWS with the UPDATED-FRAME. If no more windows exist, set width
-to 0. Does not change buffer if width does not change."
-  (let ((table (buffer-local-value 'explain-pause-top--buffer-table buffer)))
+    (buffer)
+  "Update the width of the target BUFFER, with the widest width from all the
+windows displaying it. Does not change buffer if width does not change."
+  (let ((table (buffer-local-value 'explain-pause-top--buffer-table buffer))
+        ;; include all frames, everywhere, but don't include minibuffer
+        (windows (get-buffer-window-list buffer nil t)))
     (when windows
       ;; if there are no windows, don't bother changing the size. the buffer
       ;; still exists, just not been drawn. when it is shown again, sizes
@@ -1147,11 +1157,8 @@ to 0. Does not change buffer if width does not change."
       (let ((new-width
              (seq-reduce
               (lambda (accum window)
-                (if (eq (window-frame window)
-                        updated-frame)
-                    (max accum
-                         (window-max-chars-per-line window))
-                  accum))
+                (max accum
+                     (window-max-chars-per-line window)))
               windows 0))
             (existing-width
              (explain-pause-top--table-width table)))
