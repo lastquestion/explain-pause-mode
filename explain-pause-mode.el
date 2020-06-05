@@ -143,7 +143,7 @@ not just slow commands.")
 buffer.")
 
 (defface explain-pause-top-active-column-header
-  '((t (:inherit bold)))
+  '((t (:inherit header-line-highlight)))
   "The face used to indicate the currently sorted column in the header line.")
 
 ;; logging functions
@@ -524,14 +524,14 @@ changed.)"
   header-widths
   ;; A VECTOR of  header titles. must be set before we attempt to draw.
   (header-titles nil)
+  ;; whether the header is dirty
+  header-dirty
   ;; the full line format string
   display-full-line-format
   ;; A VECTOR of format strings for every column
   display-column-formats
   ;; A VECTOR of offsets of every column
-  display-column-offsets
-  ;; the header-line
-  display-header-line)
+  display-column-offsets)
 
 (cl-defstruct explain-pause-top--table-display-entry
   begin-mark
@@ -641,7 +641,15 @@ the width cannot be 0."
        ;; convert to a list as resize-columns expects a list of fixed widths
        (cdr (append requested-widths nil)))
 
-      (let ((header (explain-pause-top--table-display-header-line table)))
+      (setf (explain-pause-top--table-needs-resize table) nil)
+      (setq layout-changed t))
+
+    ;; if the header is dirty, refresh it:
+    (when (explain-pause-top--table-header-dirty table)
+      (let ((header
+             (apply 'format
+                    (explain-pause-top--table-display-full-line-format table)
+                    (append (explain-pause-top--table-header-titles table) nil))))
         (setq header-line-format
               `(:eval (explain-pause-top--generate-header-line
                        ,header
@@ -651,8 +659,7 @@ the width cannot be 0."
 
       (force-mode-line-update)
 
-      (setf (explain-pause-top--table-needs-resize table) nil)
-      (setq layout-changed t))
+      (setf (explain-pause-top--table-header-dirty table) nil))
 
     ;; now, we are prepared to draw:
     (let ((display-draw-ptr
@@ -765,7 +772,16 @@ table yet, but this will succeed even if this is not true."
 to draw in, because it also initializes the header widths."
   (setf (explain-pause-top--table-header-titles table) headers)
   (setf (explain-pause-top--table-header-widths table)
-        (cl-map 'vector #'string-width headers)))
+        (cl-map 'vector #'string-width headers))
+  (setf (explain-pause-top--table-header-dirty table) t))
+
+(defun explain-pause-top--table-set-header (table idx header)
+  "Set one header to a new value. Must be run in the buffer it is expected to
+draw in, as it needs to calculate the width."
+  (setf (aref (explain-pause-top--table-header-titles table) idx) header)
+  (setf (aref (explain-pause-top--table-header-widths table) idx)
+        (string-width header))
+  (setf (explain-pause-top--table-header-dirty table) t))
 
 (defun explain-pause-top--table-generate-offsets (fill-width widths)
   "Return a vector of offsets for FILL-WIDTH and then all the columns in list WIDTHS.
@@ -812,13 +828,7 @@ be run within the current buffer, as it never runs `string-width'."
        ;; (and header line)
        (full-format-string
         (concat fill-format-string
-                (mapconcat #'identity fixed-format-string-list " ")))
-       ;; now generate the header line:
-       (header-line
-        (apply 'format full-format-string
-               (append header-titles nil))))
-
-    (setf (explain-pause-top--table-display-header-line table) header-line)
+                (mapconcat #'identity fixed-format-string-list " "))))
 
     (setf (explain-pause-top--table-display-full-line-format table)
           full-format-string)
@@ -830,7 +840,9 @@ be run within the current buffer, as it never runs `string-width'."
           column-offsets)
 
     (setf (explain-pause-top--table-display-column-formats table)
-          format-string-list)))
+          format-string-list)
+
+    (setf (explain-pause-top--table-header-dirty table) t)))
 
 (defun explain-pause-top--table-resize-width (table width)
   "Resize the table by updating the width and setting the dirty width
@@ -1267,13 +1279,13 @@ is made `explain-pause-top-mode', `explain-pause-mode' is also enabled."
 
   (explain-pause-top--table-set-headers
    explain-pause-top--buffer-table
-   explain-pause-top--command-entry-headers)
+   (copy-sequence explain-pause-top--command-entry-headers))
+
+  (setq-local explain-pause-top--sort-column nil)
 
   ;; default sort: slow count
-  (setq-local explain-pause-top--sort-column 1)
-  (explain-pause-top--table-set-sorter
-   explain-pause-top--buffer-table
-   (car (aref explain-pause-top--command-entry-sorters 1)))
+  ;; TODO hardcoded col index
+  (explain-pause-top--apply-sort 1 t)
 
   (let ((this-buffer (current-buffer)))
     (when explain-pause-top--buffer-window-size-changed
@@ -1439,6 +1451,31 @@ windows displaying it. Does not change buffer if width does not change."
         (explain-pause-top-mode)))
     buffer))
 
+(defun explain-pause-top--apply-sort (column direction)
+  "Undo the header adjustment for the current sorted column and then applies
+the new header adjustment for COLUMN in DIRECTION."
+  (when explain-pause-top--sort-column
+    (explain-pause-top--table-set-header
+     explain-pause-top--buffer-table
+     explain-pause-top--sort-column
+     (aref explain-pause-top--command-entry-headers explain-pause-top--sort-column)))
+
+  (let ((sorters (aref explain-pause-top--command-entry-sorters column)))
+    (explain-pause-top--table-set-sorter
+     explain-pause-top--buffer-table
+     (if direction (car sorters) (cdr sorters))))
+
+  (explain-pause-top--table-set-header
+   explain-pause-top--buffer-table column
+   (propertize
+    (concat
+     (aref explain-pause-top--command-entry-headers column)
+     ;; TODO perhaps make these glyphs and/or customizable
+     (if direction "▼" "▲"))
+    'face 'explain-pause-top-active-column-header))
+
+  (setq-local explain-pause-top--sort-column column))
+
 (defun explain-pause-top-sort (buffer column &optional refresh)
   "Sort top table in the BUFFER using COLUMN, which is the 0-based
 index. Optionally, immediately refresh the buffer (causes a buffer switch). In
@@ -1455,25 +1492,17 @@ nothing. Sorting the same column inverts the order."
      (list (current-buffer) (- next-column 1) t)))
   (when (eq (buffer-local-value 'major-mode buffer) 'explain-pause-top-mode)
     (let ((current-sorted (buffer-local-value 'explain-pause-top--sort-column buffer))
-          (table (buffer-local-value 'explain-pause-top--buffer-table buffer)))
+          (table (buffer-local-value 'explain-pause-top--buffer-table buffer))
+          (direction t))
       (if (eq current-sorted column)
           ;; flip ordering
-          (let* ((current-sort-func
-                  (explain-pause-top--table-sorter table))
-                 (current-sorters
-                  (aref explain-pause-top--command-entry-sorters current-sorted))
-                 (next-sorter
-                  (if (eq (car current-sorters) current-sort-func)
-                      (cdr current-sorters)
-                    (car current-sorters))))
-            (explain-pause-top--table-set-sorter
-             table
-             next-sorter))
-        ;; new sort column
-        (setq-local explain-pause-top--sort-column column)
-        (explain-pause-top--table-set-sorter
-         table
-         (car (aref explain-pause-top--command-entry-sorters column)))))
+          (let ((current-sort-func
+                 (explain-pause-top--table-sorter table))
+                (current-sorters
+                 (aref explain-pause-top--command-entry-sorters current-sorted)))
+            (if (eq current-sort-func (car current-sorters))
+                (setq direction nil))))
+      (explain-pause-top--apply-sort column direction))
     (when refresh
       (explain-pause-top--buffer-refresh-with-buffer buffer))))
 
