@@ -26,17 +26,25 @@
 ;;; Test top related code
 
 (describe
- "explain-pause-top--command-entry-number-sorter"
- (it "generates a set of lambdas for sorting"
+ "explain-pause-top--command-entry-number-sorters"
+ (it "generates a list of sorters"
      (let ((lhs (make-explain-pause-top--command-entry
                  :count 10))
            (rhs (make-explain-pause-top--command-entry
                  :count 5))
-           (sorter (explain-pause-top--command-entry-number-sorter 'count)))
-       (expect (funcall sorter lhs rhs)
+           (sorters (explain-pause-top--command-entry-number-sorters (count))))
+
+       (expect (length sorters) :to-be 1)
+       (expect (listp sorters) :to-be-truthy)
+
+       (expect (functionp (car (car sorters))) :to-be-truthy)
+       (expect (functionp (cdr (car sorters))) :to-be-truthy)
+
+       (expect (funcall (car (car sorters)) lhs rhs)
                :to-be
                nil)
-       (expect (funcall sorter rhs lhs)
+
+       (expect (funcall (cdr (car sorters)) lhs rhs)
                :to-be
                t))))
 
@@ -65,26 +73,25 @@
          :command-set '(a)))
        (entry-d
         (make-explain-pause-top--command-entry
-         :command-set '(d)))
-       (sorter
-        (explain-pause-top---command-entry-command-set-sorter nil)))
+         :command-set '(d))))
+
    (it "sorts when sets same size"
        (expect
-        (funcall sorter
+        (explain-pause-top---command-entry-command-set-sorter
          entry-c
          entry-a)
         :to-be
         t)
 
        (expect
-        (funcall sorter
+        (explain-pause-top---command-entry-command-set-sorter
          entry-c
          entry-d)
          :to-be
          nil)
 
         (expect
-         (funcall sorter
+         (explain-pause-top---command-entry-command-set-sorter
           entry-c
           entry-c)
           :to-be
@@ -92,7 +99,7 @@
 
    (it "sorts when lhs longer"
        (expect
-        (funcall sorter
+        (explain-pause-top---command-entry-command-set-sorter
          entry-ca
          entry-a)
         :to-be
@@ -100,7 +107,7 @@
 
    (it "sorts when rhs longer"
        (expect
-        (funcall sorter
+        (explain-pause-top---command-entry-command-set-sorter
          entry-c
          entry-da)
         :to-be
@@ -108,21 +115,21 @@
 
    (it "sorts after some equal"
        (expect
-        (funcall sorter
+        (explain-pause-top---command-entry-command-set-sorter
          entry-cab
          entry-cad)
         :to-be
         nil)
 
        (expect
-        (funcall sorter
+        (explain-pause-top---command-entry-command-set-sorter
          entry-cab
          entry-caa)
         :to-be
         t)
 
      (expect
-      (funcall sorter
+      (explain-pause-top---command-entry-command-set-sorter
        entry-cab
        entry-ca)
       :to-be

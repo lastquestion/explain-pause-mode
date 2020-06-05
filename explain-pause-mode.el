@@ -125,21 +125,32 @@ by calling `explain-pause-top-auto-refresh'."
 ;; public hooks
 (defvar explain-pause-measured-command-hook nil
   "Functions(s) to call after a command has been measured. The functions are
-called with arguments (ms, read-io-ms, command-set). Command-set is a list
-of function symbols or strings.
+called with arguments (ms read-io-ms command-set was-profiled). Command-set is
+a list of function symbols or strings.
 
 These commands must be fast, because this hook is executed on every command,
 not just slow commands.")
+
+;; custom faces
+(defface explain-pause-top-slow
+  '((t (:foreground "red")))
+  "The face used to highlight the slow count column when a command is slow
+(e.g. > 1 hit).")
+
+(defface explain-pause-top-changed
+  '((t (:inherit bold)))
+  "The face used to indicate that a value changed since the last refresh of the
+buffer.")
+
+(defface explain-pause-top-active-column-header
+  '((t (:inherit bold)))
+  "The face used to indicate the currently sorted column in the header line.")
 
 ;; logging functions
 (defun explain--as-ms-exact (time)
   "Returns the TIME object in exact milliseconds, ignoring picoseconds."
   (seq-let [high-seconds low-seconds microseconds] time
     (+ (* (+ (* high-seconds 65536) low-seconds) 1000) (/ microseconds 1000))))
-
-(defun explain-pause--float-2-fixed (val)
-  "Turn a floating point value into a fixed 2 digit string."
-  (format "%.2f" val))
 
 (let ((explain--log-buffer nil))
   (defun explain--get-log-buffer ()
@@ -527,6 +538,8 @@ changed.)"
   item-ptr
   prev-state
   total-length
+  ;; A bool-vector of whether we need to draw
+  dirty-columns
   ;; A VECTOR of cached strings
   cached-strings
   ;; A VECTOR of cached string lengths
@@ -568,7 +581,8 @@ the width cannot be 0."
          (column-count (length display-column-widths))
          (requested-widths (copy-sequence
                             (explain-pause-top--table-header-widths table)))
-         (layout-changed nil))
+         (layout-changed nil)
+         (current-diffs (make-vector column-count nil)))
 
     (while (and display-order-ptr
                 display-entries-ptr)
@@ -578,7 +592,8 @@ the width cannot be 0."
         (setf (explain-pause-top--table-display-entry-item-ptr current-entry)
               to-draw-item)
 
-        (explain-pause-top--table-prepare-draw current-entry requested-widths))
+        (explain-pause-top--table-prepare-draw current-entry requested-widths
+                                               current-diffs))
 
       (setq display-order-ptr (cdr display-order-ptr))
       (setq display-entries-prev display-entries-ptr)
@@ -592,11 +607,13 @@ the width cannot be 0."
                          :item-ptr (car display-order-ptr)
                          :prev-state nil
                          :total-length nil
+                         :dirty-columns (make-bool-vector column-count nil)
                          :cached-strings (make-vector column-count nil)
                          :cached-string-lengths (make-vector column-count nil)))
              (new-list-entry (list new-entry)))
 
-        (explain-pause-top--table-prepare-draw new-entry requested-widths)
+        (explain-pause-top--table-prepare-draw new-entry requested-widths
+                                               current-diffs)
 
         ;; insert at the tail
         (setcdr display-entries-prev new-list-entry)
@@ -608,8 +625,7 @@ the width cannot be 0."
     ;; * columns holds the largest requested width.
     ;; * anything that we don't need anymore is starting at display-entries-ptr
     ;; check to see if the fixed columns have changed width, OR if our width
-    ;; changed. If so, we'll set prev-state for every entry as we paint to nil,
-    ;; to force a full refresh:
+    ;; changed. If so, we'll force `draw` to draw full lines:
     ;; (TODO could we only paint things "after" the first change?)
     (when (or
            (cl-mismatch display-column-widths
@@ -642,12 +658,9 @@ the width cannot be 0."
     (let ((display-draw-ptr
            (cdr (explain-pause-top--table-display-entries table))))
       (while display-draw-ptr
-        (let ((current-entry (car display-draw-ptr)))
-          (when layout-changed
-            (setf (explain-pause-top--table-display-entry-prev-state current-entry)
-                  nil))
-
-          (explain-pause-top--table-draw table current-entry))
+        (explain-pause-top--table-draw table
+                                       (car display-draw-ptr)
+                                       layout-changed)
 
         (setq display-draw-ptr (cdr display-draw-ptr))))
 
@@ -713,17 +726,20 @@ returned."
 
 (defun explain-pause-top--table-insert (table item)
   "Insert an item into the entries. It will be inserted at the correct place
-with the current sort function."
+with the current sort function.  It is expected that an item is ever only
+inserted once."
   (explain-pause-top--table-find-and-insert table item))
 
 (defun explain-pause-top--table-update (table item)
   "Update an item in the entries. It will be moved to the correct place
-with the current sort function. It is expected that the item is `eq' to
-an already existing item in the entries."
+with the current sort function. It is more efficient to call
+`explain-pause-top--table-insert' if you know the entry is not in the
+table yet, but this will succeed even if this is not true."
   (let* ((prev
           (explain-pause-top--table-find-and-insert table item))
          (ptr (cdr prev)))
-    ;; if prev is nil, we don't need to do anything at all.
+    ;; if prev is nil, we don't need to do anything at all;
+    ;; it means that the place in the list did not change.
     (when prev
       ;; otherwise, we have to clean up the old entry:
       (when (eq (car prev) item)
@@ -890,108 +906,6 @@ adds '$' when there is more header either front or end."
             (substring header bounded-start bounded-end)
             end-dot-str)))
 
-(cl-defstruct explain-pause-top--command-entry
-  (command-set
-   nil
-   :header-name "Command"
-   :to-string explain-pause--command-set-as-string
-   :sorter explain-pause-top---command-entry-command-set-sorter)
-  (count
-   0
-   :header-name "calls"
-   :to-string number-to-string
-   :sorter explain-pause-top--command-entry-number-sorter)
-  (slow-count
-   0
-   :header-name "slow"
-   :to-string number-to-string
-   :sorter explain-pause-top--command-entry-number-sorter)
-  (avg-ms
-   0
-   :header-name "avg ms"
-   :to-string explain-pause--float-2-fixed
-   :sorter explain-pause-top--command-entry-number-sorter)
-  (total-ms
-   0
-   :header-name "ms"
-   :to-string number-to-string
-   :sorter explain-pause-top--command-entry-number-sorter))
-
-(defun explain-pause-top---command-entry-command-set-sorter (_)
-  "Generate a special sort for command-sets that sorts alphabetically."
-  ;; we know the fieldname, so ignore that.
-  ;; to sort by command, we have to convert the objects into strings, which
-  ;; is expensive. TODO we should build a string mapping...
-  (lambda (lhs rhs)
-    (catch 'finished
-      (let ((lhs-ptr (explain-pause-top--command-entry-command-set lhs))
-            (rhs-ptr (explain-pause-top--command-entry-command-set rhs)))
-        (while (or lhs-ptr rhs-ptr)
-          (let ((lhs-cmd (car lhs-ptr))
-                (rhs-cmd (car rhs-ptr)))
-            (when (not (eq lhs-cmd rhs-cmd))
-              (let ((string-lhs (if lhs-cmd
-                                    (explain-pause--command-as-string lhs-cmd)
-                                  ""))
-                    (string-rhs (if rhs-cmd
-                                    (explain-pause--command-as-string rhs-cmd)
-                                  "")))
-              (throw 'finished (string-greaterp string-lhs string-rhs)))))
-          (setq lhs-ptr (cdr lhs-ptr))
-          (setq rhs-ptr (cdr rhs-ptr)))
-        ;; both must be identical
-        nil))))
-
-(defun explain-pause-top--command-entry-number-sorter (field-name)
-  "Generate a sorter for numbers for the given FIELD-NAME"
-  (lambda (lhs rhs)
-    (<
-     (cl-struct-slot-value
-      'explain-pause-top--command-entry
-      field-name
-      lhs)
-     (cl-struct-slot-value
-      'explain-pause-top--command-entry
-      field-name
-      rhs))))
-
-(let ((meta (cl-struct-slot-info 'explain-pause-top--command-entry))
-      (order  [command-set slow-count avg-ms total-ms count]))
-  (defun explain-pause-top--command-entry-meta-map (func)
-    "Map over the meta fields of the columns"
-    (cl-map 'vector (lambda (field-name)
-                      (funcall func field-name (assq field-name meta)))
-            order))
-
-  (defconst explain-pause-top--command-entry-headers
-    (explain-pause-top--command-entry-meta-map
-     (lambda (field-name opts)
-       (plist-get opts :header-name)))
-    "The header strings of a `explain-pause-top' table")
-
-  (defconst explain-pause-top--command-entry-converters
-    (explain-pause-top--command-entry-meta-map
-     (lambda (field-name opts)
-       (plist-get opts :to-string)))
-    "The converter functions for each column of a `explain-pause-top'
-table")
-
-  (defconst explain-pause-top--command-entry-fields
-    (explain-pause-top--command-entry-meta-map
-     (lambda (field-name opts) field-name))
-    "The field name for each column of a `explain-pause-top' table")
-
-  (defconst explain-pause-top--command-entry-sorters
-    (explain-pause-top--command-entry-meta-map
-     (lambda (field-name opts)
-       (let* ((sorter (plist-get opts :sorter))
-              (sort-function (funcall sorter field-name)))
-         (list
-          sort-function
-          (lambda (lhs rhs)
-            (funcall sort-function rhs lhs))))))
-    "The sorter functions for each column of a `explain-pause-top' table"))
-
 (defun explain-pause-top--table-item-command-overflow
     (table column-widths command-string)
   "Return the truncated string for command in first row, and strings for
@@ -1015,92 +929,31 @@ further lines, if needed."
              (rest-lines (concat "\n  " (mapconcat #'identity rest-parts "\\\n  "))))
         (cons first-line rest-lines)))))
 
-(defun explain-pause-top--table-draw (table item)
-  "Redraw an item within it's bounds. If the item has a begin-mark, we exist.
-If not, we're new. Move to EOB, set begin-mark. If prev-state exists, we
-should update columns. If it not set, draw the entire line at once."
-  (let* ((begin-mark (explain-pause-top--table-display-entry-begin-mark item))
-         (item-ptr (explain-pause-top--table-display-entry-item-ptr item))
-         (prev-state (explain-pause-top--table-display-entry-prev-state item))
-         (cached-strings
-          (explain-pause-top--table-display-entry-cached-strings item))
-         (total-prev-length
-          (explain-pause-top--table-display-entry-total-length item))
-         (column-widths
-          (explain-pause-top--table-column-widths table)))
+(defun explain-pause-top--table-draw (table item force-full-line)
+  "Redraw an item within it's bounds.
+
+If the item has a begin-mark, we exist and are replacing text. If not, we're
+new; in that case, move to EOB, set begin-mark ourselves. If FORCE-FULL-LINE is
+set OR we are new, the entire line is printed, no matter what the dirty-columns
+says."
+
+  (let ((begin-mark (explain-pause-top--table-display-entry-begin-mark item))
+        (new-item nil)
+        (cached-strings
+         (explain-pause-top--table-display-entry-cached-strings item))
+        (total-prev-length
+         (explain-pause-top--table-display-entry-total-length item))
+        (column-widths
+         (explain-pause-top--table-column-widths table)))
 
     (unless begin-mark
       (setq begin-mark (point-max-marker))
-      (setf (explain-pause-top--table-display-entry-begin-mark item) begin-mark))
+      (setf (explain-pause-top--table-display-entry-begin-mark item) begin-mark)
+      (setq new-item t))
 
     (cond
-     (prev-state
-      (let ((format-strings
-             (explain-pause-top--table-display-column-formats table))
-            (column-offsets
-             (explain-pause-top--table-display-column-offsets table)))
-
-        (cl-loop
-         for column-index from 0
-         for column-field across explain-pause-top--command-entry-fields
-         ;;TODO DRY with prepare-draw
-         do (let* ((old-val (cl-struct-slot-value
-                             'explain-pause-top--command-entry
-                             column-field
-                             prev-state))
-                   (new-val (cl-struct-slot-value
-                             'explain-pause-top--command-entry
-                             column-field
-                             item-ptr)))
-              (unless (eq old-val new-val)
-                (let ((cached-val (aref cached-strings column-index))
-                      (format-str (aref format-strings column-index)))
-                  (cond
-                   ((eq column-field 'command-set)
-                    ;; cmd, is special cased due to overflow logic. this could
-                    ;; be cleaned up and abstracted away, but I'm not sure I
-                    ;; want to bother yet
-                    (let* ((command-lines
-                            (explain-pause-top--table-item-command-overflow
-                             table column-widths cached-val))
-                           (first-line
-                            (if (stringp command-lines)
-                                command-lines
-                              (car command-lines)))
-                           (extra-lines
-                            (unless (stringp command-lines)
-                              (cdr command-lines)))
-                           (printed-first-line (format format-str first-line))
-                           (width (explain-pause-top--table-width table)))
-
-                      ;; TODO hardcoded offset 0
-                      (goto-char begin-mark)
-                      (delete-char (length printed-first-line))
-                      (insert printed-first-line)
-
-                      ;; now deal with extra lines. total-prev-length must
-                      ;; exist. if the total-prev-length is > width then we
-                      ;; already had extra lines; delete them, insert ours, if
-                      ;; it exists, and update total-prev-lines
-                      (let ((prev-extra-length (- total-prev-length width)))
-                        (goto-char (+ begin-mark width))
-                        (when (> prev-extra-length 0)
-                          (delete-char prev-extra-length))
-                        (when extra-lines
-                          (insert extra-lines))
-
-                        (let ((new-total-length (+ width (length extra-lines))))
-                          (unless (eq new-total-length total-prev-length)
-                            (setf (explain-pause-top--table-display-entry-total-length item)
-                                  new-total-length))))))
-                   (t
-                    ;; normal field. don't do these lookups unless we have to
-                    (let* ((new-str (format format-str cached-val))
-                           (offset (aref column-offsets column-index)))
-                      (goto-char (+ begin-mark offset))
-                      (delete-char (length new-str))
-                      (insert new-str))))))))))
-     (t
+     ((or force-full-line
+          new-item)
       ;; draw everything in one shot
       (let* ((full-format-string
               (explain-pause-top--table-display-full-line-format table))
@@ -1118,6 +971,7 @@ should update columns. If it not set, draw the entire line at once."
                             (apply 'format full-format-string first-line
                                    (cdr (append cached-strings nil)))
                             extra-lines)))
+
         ;; go to the beginning of our region
         (goto-char begin-mark)
 
@@ -1132,48 +986,101 @@ should update columns. If it not set, draw the entire line at once."
 
         (unless total-prev-length
           ;; we didn't exist, add the newline
-          (insert "\n")))))
+          (insert "\n"))))
+     (t
+      ;; per column update using dirty
+      (let ((format-strings
+             (explain-pause-top--table-display-column-formats table))
+            (column-offsets
+             (explain-pause-top--table-display-column-offsets table))
+            (dirty-columns
+             (explain-pause-top--table-display-entry-dirty-columns item)))
 
-    ;; update the prev state. this assumes no one is mutating deeply
-    (setf (explain-pause-top--table-display-entry-prev-state item)
-          (copy-explain-pause-top--command-entry item-ptr))))
+        (cl-loop
+         for column-index from 0
+         for dirty-column across dirty-columns
+         do (when dirty-column
+              ;; the colunn is dirty; we need to draw
+              (let ((cached-val (aref cached-strings column-index))
+                    (format-str (aref format-strings column-index)))
+                (cond
+                 ((eq column-index 0)
+                  ;; cmd, is special cased due to overflow logic. this could
+                  ;; be cleaned up and abstracted away, but I'm not sure I
+                  ;; want to bother yet
+                  (let* ((command-lines
+                          (explain-pause-top--table-item-command-overflow
+                           table column-widths cached-val))
+                         (first-line
+                          (if (stringp command-lines)
+                              command-lines
+                            (car command-lines)))
+                         (extra-lines
+                          (unless (stringp command-lines)
+                            (cdr command-lines)))
+                         (printed-first-line (format format-str first-line))
+                         (width (explain-pause-top--table-width table)))
 
-(defun explain-pause-top--table-prepare-draw (item requested-widths)
+                    ;; TODO hardcoded offset 0
+                    (goto-char begin-mark)
+                    (delete-char (length printed-first-line))
+                    (insert printed-first-line)
+
+                    ;; now deal with extra lines. total-prev-length must
+                    ;; exist. if the total-prev-length is > width then we
+                    ;; already had extra lines; delete them, insert ours, if
+                    ;; it exists, and update total-prev-lines
+                    (let ((prev-extra-length (- total-prev-length width)))
+                      (goto-char (+ begin-mark width))
+                      (when (> prev-extra-length 0)
+                        (delete-char prev-extra-length))
+                      (when extra-lines
+                        (insert extra-lines))
+
+                      (let ((new-total-length (+ width (length extra-lines))))
+                        (unless (eq new-total-length total-prev-length)
+                          (setf (explain-pause-top--table-display-entry-total-length item)
+                                new-total-length))))))
+                 (t
+                  ;; normal field. don't do these lookups unless we have to
+                  (let* ((new-str (format format-str cached-val))
+                         (offset (aref column-offsets column-index)))
+                    (goto-char (+ begin-mark offset))
+                    (delete-char (length new-str))
+                    (insert new-str))))))))))))
+
+(defun explain-pause-top--table-prepare-draw (item requested-widths column-diffs)
   "Prepare to draw an item by generating the converted strings from the values,
-and update REQUESTED-WIDTHS with their widths."
-  (let ((cached-strings
-         (explain-pause-top--table-display-entry-cached-strings item))
-        (cached-string-lengths
-         (explain-pause-top--table-display-entry-cached-string-lengths item))
-        (item-ptr (explain-pause-top--table-display-entry-item-ptr item))
-        (prev-state (explain-pause-top--table-display-entry-prev-state item)))
+and update REQUESTED-WIDTHS with their widths. COLUMN-DIFFS is a temporary vector
+used to hold the difference of columns."
+  (let* ((cached-strings
+          (explain-pause-top--table-display-entry-cached-strings item))
+         (cached-string-lengths
+          (explain-pause-top--table-display-entry-cached-string-lengths item))
+         (dirty-columns (explain-pause-top--table-display-entry-dirty-columns item))
+         (item-ptr (explain-pause-top--table-display-entry-item-ptr item))
+         (prev-state (explain-pause-top--table-display-entry-prev-state item)))
+
+    ;; ask for any new columns
+    (setf (explain-pause-top--table-display-entry-prev-state item)
+          (explain-pause-top--command-entry-compare prev-state item-ptr column-diffs))
 
     ;; command-set is safe, all inputs are always formatted in specifiers
     (cl-loop
      for column-index from 0
-     for column-field across explain-pause-top--command-entry-fields
+     for column-diff across column-diffs
      for column-width across requested-widths
-     do (let* ((old-val (when prev-state
-                          (cl-struct-slot-value
-                           'explain-pause-top--command-entry
-                           column-field
-                           prev-state)))
-               (new-val (cl-struct-slot-value
-                         'explain-pause-top--command-entry
-                         column-field
-                         item-ptr))
-               (compare-width 0))
-
-          (if (eq old-val new-val)
+     for dirty-column across-ref dirty-columns
+     do (let ((compare-width 0))
+          (if (not column-diff)
               (setq compare-width (aref cached-string-lengths column-index))
             ;; set and update
-            (let* ((converter (aref explain-pause-top--command-entry-converters
-                                    column-index))
-                   (new-str (funcall converter new-val))
-                   (new-string-width (string-width new-str)))
-              (setf (aref cached-strings column-index) new-str)
+            (let ((new-string-width (string-width column-diff)))
+              (setf (aref cached-strings column-index) column-diff)
               (setf (aref cached-string-lengths column-index) new-string-width)
               (setq compare-width new-string-width)))
+
+          (setf dirty-column (not (eq column-diff nil)))
 
           (when (> compare-width column-width)
             (setf (aref requested-widths column-index) compare-width))))))
@@ -1182,6 +1089,13 @@ and update REQUESTED-WIDTHS with their widths."
 ;; buffer-local variables that should be always private
 (defvar-local explain-pause-top--buffer-refresh-timer nil
   "The timer for the buffer. It is nil if auto-refresh is off for that buffer.")
+
+(defvar-local explain-pause-top--buffer-command-pipe nil
+  "The hook lambda that is added to the `explain-pause-measured-command-hook'
+for this buffer.")
+
+(defvar-local explain-pause-top--buffer-statistics nil
+  "The set of commands that have not yet been applied in a table update.")
 
 (defvar-local explain-pause-top--buffer-refresh-interval nil
   "The refresh interval for the buffer. It is nil if auto-refresh is off for
@@ -1205,6 +1119,128 @@ to watch for resizes.")
     map)
   "Keymap for `explain-pause-top' major mode")
 
+;; command-entry
+(cl-defstruct explain-pause-top--command-entry
+  command-set
+  count
+  slow-count
+  avg-ms
+  total-ms
+  dirty)
+
+(defun explain-pause-top---command-entry-command-set-sorter (lhs rhs)
+  "Sort command-sets alphabetically."
+  ;; to sort by command, we have to convert the objects into strings, which
+  ;; is expensive. TODO we should build a string mapping...
+  (catch 'finished
+    (let ((lhs-ptr (explain-pause-top--command-entry-command-set lhs))
+          (rhs-ptr (explain-pause-top--command-entry-command-set rhs)))
+      (while (or lhs-ptr rhs-ptr)
+        (let ((lhs-cmd (car lhs-ptr))
+              (rhs-cmd (car rhs-ptr)))
+          (when (not (eq lhs-cmd rhs-cmd))
+            (let ((string-lhs (if lhs-cmd
+                                  (explain-pause--command-as-string lhs-cmd)
+                                ""))
+                  (string-rhs (if rhs-cmd
+                                  (explain-pause--command-as-string rhs-cmd)
+                                "")))
+              (throw 'finished (string-greaterp string-lhs string-rhs)))))
+        (setq lhs-ptr (cdr lhs-ptr))
+        (setq rhs-ptr (cdr rhs-ptr)))
+      ;; both must be identical
+      nil)))
+
+(defmacro explain-pause-top--command-entry-number-sorters (field-names)
+  "Generate sorters for numbers for the given FIELD-NAMES"
+  `(list ,@(cl-loop
+       for field-name in field-names
+       collect
+       (let ((getter (intern (format "explain-pause-top--command-entry-%s" field-name))))
+         `(cons (lambda (lhs rhs)
+                  (< (,getter lhs)
+                     (,getter rhs)))
+                (lambda (lhs rhs)
+                  (>= (,getter lhs)
+                      (,getter rhs))))))))
+
+(defmacro explain-pause-top--command-entry-column-fields-compare
+    (prev current diffs cases)
+  "Generate a list of statements one for each field (car) of CASES which
+compares the PREV and CURRENT values of that field. When they do not match, the
+cdr of case is run and value stored into DIFFS with the new value bound as
+`field-val`. Otherwise nil is stored at that index."
+  `(let ((dirty-equal (and ,prev
+                           (eq (explain-pause-top--command-entry-dirty ,prev)
+                               (explain-pause-top--command-entry-dirty ,current)))))
+     ,@(cl-loop
+        for case in cases
+        for index from 0
+        collect
+        (let* ((field-name (car case))
+               (body (cdr case))
+               (getter (intern (format "explain-pause-top--command-entry-%s"
+                                       field-name))))
+          `(let ((field-val (,getter ,current)))
+             (if (and ,prev
+                      dirty-equal
+                      (eq (,getter ,prev) field-val))
+                 (setf (aref ,diffs ,index) nil)
+               (setf (aref ,diffs ,index) ,@body))
+             (when ,prev
+               (setf (,getter ,prev) field-val)))))))
+
+(defmacro explain-pause-top--propertize-if-dirty (dirty str-expr)
+  "If DIRTY is true, generate a propertized STR-EXPR with
+explain-pause-top-changed face, otherwise just return STR-EXR"
+  `(if ,dirty
+       (propertize ,str-expr 'face 'explain-pause-top-changed)
+     ,str-expr))
+
+(defconst explain-pause-top--command-entry-headers
+  ["Command" "slow" "avg ms" "ms" "calls"]
+  "The header strings of a `explain-pause-top' table")
+
+(defun explain-pause-top--command-entry-compare (prev-state new-state column-diffs)
+  "Update COLUMN-DIFFS, a vector, with the new strings or nil if nothing changed."
+  (let* ((dirty-state (explain-pause-top--command-entry-dirty new-state))
+         (dirty (not (eq dirty-state nil))))
+    (explain-pause-top--command-entry-column-fields-compare
+     prev-state new-state column-diffs
+     ((command-set
+       (explain-pause--command-set-as-string field-val))
+      (slow-count
+       (let ((val-str (number-to-string field-val)))
+         (if (> field-val 0)
+             (if dirty
+                 (propertize val-str 'face
+                             '(explain-pause-top-slow explain-pause-top-changed))
+               (propertize val-str 'face 'explain-pause-top-slow))
+           (explain-pause-top--propertize-if-dirty dirty val-str))))
+      (avg-ms
+       (explain-pause-top--propertize-if-dirty dirty (format "%.2f" field-val)))
+      (total-ms
+       (explain-pause-top--propertize-if-dirty dirty (number-to-string field-val)))
+      (count
+       (explain-pause-top--propertize-if-dirty dirty (number-to-string field-val)))))
+
+    (if prev-state
+        (setf (explain-pause-top--command-entry-dirty prev-state) dirty-state)
+      (setq prev-state (copy-explain-pause-top--command-entry new-state)))
+
+    (setf (explain-pause-top--command-entry-dirty new-state) nil)
+
+    prev-state))
+
+(defconst explain-pause-top--command-entry-sorters
+  (vconcat
+   (cons (cons #'explain-pause-top---command-entry-command-set-sorter
+               (lambda (lhs rhs)
+                 (not (explain-pause-top---command-entry-command-set-sorter lhs rhs))))
+         (explain-pause-top--command-entry-number-sorters
+          (slow-count avg-ms total-ms count))))
+  "The sorter functions for each column of a `explain-pause-top' table")
+
 ;; `explain-pause-top' major mode
 (define-derived-mode explain-pause-top-mode special-mode
   "Explain Pause Top"
@@ -1213,8 +1249,11 @@ run commands in emacs. The mode resizes the table inside the buffer to always be
 the width of the largest window viewing the buffer. Reverting the buffer will
 refresh the table. The buffer initially starts with the auto refresh interval
 given in `explain-pause-top-auto-refresh-interval'. You can modify this interval
-on a per buffer basis by calling `explain-pause-top-auto-refresh'."
+on a per buffer basis by calling `explain-pause-top-auto-refresh'. When a buffer
+is made `explain-pause-top-mode', `explain-pause-mode' is also enabled."
   (buffer-disable-undo)
+  (font-lock-mode -1)
+
   (setq truncate-lines t)
   (setq buffer-read-only t)
 
@@ -1222,6 +1261,9 @@ on a per buffer basis by calling `explain-pause-top-auto-refresh'."
 
   (setq-local explain-pause-top--buffer-table
               (make-explain-pause-top--table))
+
+  (setq-local explain-pause-top--buffer-statistics
+              (make-hash-table :test 'equal))
 
   (explain-pause-top--table-set-headers
    explain-pause-top--buffer-table
@@ -1243,9 +1285,44 @@ on a per buffer basis by calling `explain-pause-top-auto-refresh'."
                   ;; ignore frame, and recalculate the width across all frames
                   ;; every time. we always need the biggest.
                   (explain-pause-top--buffer-update-width-from-windows
-                   this-buffer)))
+                   this-buffer))))
 
-    (explain-pause-top--pipe-commands 'add this-buffer))
+  (let ((this-commands explain-pause-top--buffer-statistics))
+    (when explain-pause-top--buffer-command-pipe
+      (remove-hook 'explain-pause-measured-command-hook
+                   explain-pause-top--buffer-command-pipe))
+
+    (setq-local
+     explain-pause-top--buffer-command-pipe
+     (lambda (ms read-io-ms command-set was-profiled)
+       (let ((entry (gethash command-set this-commands nil))
+             (this-slow-count (if (> ms explain-pause-slow-too-long-ms) 1 0)))
+         (if entry
+             ;; update.
+             (let*
+                 ((old-count (explain-pause-top--command-entry-count entry))
+                  (old-ms (explain-pause-top--command-entry-total-ms entry))
+                  (slow-count (explain-pause-top--command-entry-slow-count entry))
+                  (new-count (1+ old-count))
+                  (new-slow-count (+ slow-count this-slow-count))
+                  (new-ms (+ ms old-ms))
+                  (new-avg (/ (float new-ms) (float new-count))))
+               (setf (explain-pause-top--command-entry-count entry) new-count)
+               (setf (explain-pause-top--command-entry-slow-count entry) new-slow-count)
+               (setf (explain-pause-top--command-entry-total-ms entry) new-ms)
+               (setf (explain-pause-top--command-entry-avg-ms entry) new-avg)
+               (setf (explain-pause-top--command-entry-dirty entry) t))
+           ;; new.
+           (puthash command-set (make-explain-pause-top--command-entry
+                     :command-set command-set
+                     :count 1
+                     :avg-ms ms
+                     :total-ms ms
+                     :slow-count this-slow-count
+                     :dirty 'new) this-commands)))))
+
+    (add-hook 'explain-pause-measured-command-hook
+              explain-pause-top--buffer-command-pipe))
 
   (add-hook 'window-size-change-functions
               explain-pause-top--buffer-window-size-changed)
@@ -1261,15 +1338,22 @@ on a per buffer basis by calling `explain-pause-top-auto-refresh'."
 
   (explain-pause-top-auto-refresh nil explain-pause-top-auto-refresh-interval)
 
+  ;; enable the minor mode if not enabled
+  (unless explain-pause-mode
+    (explain-pause-mode))
+
   ;; immediately ask for a resize:
   (funcall explain-pause-top--buffer-window-size-changed nil))
 
 (defun explain-pause-top--buffer-killed ()
   "Clean timers and hooks when the buffer is destroyed."
+  (remove-hook 'explain-pause-measured-command-hook
+               explain-pause-top--buffer-command-pipe)
+
   (explain-pause-top-auto-refresh)
+
   (remove-hook 'window-size-change-functions
-               explain-pause-top--buffer-window-size-changed)
-  (explain-pause-top--pipe-commands 'remove (current-buffer)))
+               explain-pause-top--buffer-window-size-changed))
 
 (defun explain-pause-top--buffer-revert (_ignoreauto _noconfirm)
   (explain-pause-top--buffer-refresh))
@@ -1292,11 +1376,23 @@ on a per buffer basis by calling `explain-pause-top-auto-refresh'."
 
 (defun explain-pause-top--buffer-refresh-with-buffer (buffer)
   "Refresh the target BUFFER"
-  (with-current-buffer buffer
-    (explain-pause-top--buffer-refresh)))
+    (with-current-buffer buffer
+      (explain-pause-top--buffer-refresh)))
 
 (defun explain-pause-top--buffer-refresh ()
   "Refresh the current buffer - redraw the data at the current target-width"
+  ;; first, insert all the items
+  ;; TODO: is this slow? no documentation on cost of iteration
+  (maphash
+   (lambda (key item)
+     (let ((dirty (explain-pause-top--command-entry-dirty item)))
+       (cond
+        ((eq dirty 'new)
+         (explain-pause-top--table-insert explain-pause-top--buffer-table item))
+        (dirty
+         (explain-pause-top--table-update explain-pause-top--buffer-table item)))))
+   explain-pause-top--buffer-statistics)
+
   ;; It's possible a refresh timer ran before/after we calculated size, if so,
   ;; don't try to draw yet.
   (unless (eq (explain-pause-top--table-width explain-pause-top--buffer-table) 0)
@@ -1343,72 +1439,6 @@ windows displaying it. Does not change buffer if width does not change."
         (explain-pause-top-mode)))
     buffer))
 
-(let ((piped-command-buffers nil)
-      (command-statistics (make-hash-table
-                            :test 'equal)))
-  (defun explain-pause-top-clear (&optional refresh)
-    "Clear the command statistics that `explain-pause-top' is tracking.
-
-This data is shared amongst all `explain-pause-top' buffers, so this action will
-clear their data even if the buffer is not auto-refreshing. Optionally, REFRESH
-all buffers immediately (causes a switch to every buffer). In interactive mode,
-this is true."
-    (interactive (list t))
-    (clrhash command-statistics)
-    (dolist (buffer piped-command-buffers)
-      (let ((table (buffer-local-value 'explain-pause-top--buffer-table buffer)))
-        (explain-pause-top--table-clear table))
-      (when refresh
-        (explain-pause-top--buffer-refresh-with-buffer buffer))))
-
-  (defun explain-pause-top--pipe-commands (action buffer)
-    "Add or remove (ACTION) the buffer from the list of `explain-pause-top' major
-mode buffers. If there are none, the hook is removed. If there is at least one,
-the hook is added."
-    (cond
-     ((eq action 'add)
-      (add-to-list 'piped-command-buffers buffer))
-     ((eq action 'remove)
-      (setq piped-command-buffers (delq buffer piped-command-buffers))))
-
-    (if (eq (length piped-command-buffers) 0)
-        (remove-hook 'explain-pause-measured-command-hook
-                     #'explain-pause-top--consume-commands)
-      (add-hook 'explain-pause-measured-command-hook
-                #'explain-pause-top--consume-commands)))
-
-  (defun explain-pause-top--consume-commands (ms read-ms command-set was-profiled)
-    "Consume the event from the stream and add it into the shared store between
-all `explain-pause-top' buffers."
-    (let ((entry (gethash command-set command-statistics nil))
-          (action 'explain-pause-top--table-update)
-          (this-slow-count (if (> ms explain-pause-slow-too-long-ms) 1 0)))
-      (if entry
-          (let*
-              ((old-count (explain-pause-top--command-entry-count entry))
-               (old-ms (explain-pause-top--command-entry-total-ms entry))
-               (slow-count (explain-pause-top--command-entry-slow-count entry))
-               (new-count (1+ old-count))
-               (new-slow-count (+ slow-count this-slow-count))
-               (new-ms (+ ms old-ms))
-               (new-avg (/ (float new-ms) (float new-count))))
-            (setf (explain-pause-top--command-entry-count entry) new-count)
-            (setf (explain-pause-top--command-entry-slow-count entry) new-slow-count)
-            (setf (explain-pause-top--command-entry-total-ms entry) new-ms)
-            (setf (explain-pause-top--command-entry-avg-ms entry) new-avg))
-        (setq entry (make-explain-pause-top--command-entry
-                     :command-set command-set
-                     :count 1
-                     :avg-ms ms
-                     :total-ms ms
-                     :slow-count this-slow-count))
-        (puthash command-set entry command-statistics)
-        (setq action 'explain-pause-top--table-insert))
-
-      (dolist (buffer piped-command-buffers)
-        (let ((table (buffer-local-value 'explain-pause-top--buffer-table buffer)))
-          (funcall action table entry))))))
-
 (defun explain-pause-top-sort (buffer column &optional refresh)
   "Sort top table in the BUFFER using COLUMN, which is the 0-based
 index. Optionally, immediately refresh the buffer (causes a buffer switch). In
@@ -1434,7 +1464,7 @@ nothing. Sorting the same column inverts the order."
                   (aref explain-pause-top--command-entry-sorters current-sorted))
                  (next-sorter
                   (if (eq (car current-sorters) current-sort-func)
-                      (cadr current-sorters)
+                      (cdr current-sorters)
                     (car current-sorters))))
             (explain-pause-top--table-set-sorter
              table
@@ -1447,6 +1477,54 @@ nothing. Sorting the same column inverts the order."
     (when refresh
       (explain-pause-top--buffer-refresh-with-buffer buffer))))
 
+(defun explain-pause-top--pick-interactive-buffer ()
+  "In interactive mode, prompt the user to pick a `explain-pause-top' buffer if
+the current buffer is not already one. If there is exactly one
+`explain-pause-top' nuffer, pick it."
+  ;; if the current buffer is a explain-pause, just pick that.
+  (if (eq major-mode 'explain-pause-top-mode)
+      nil
+    ;; otherwise, make a list of top buffers
+    (let ((mode-buffers
+           (seq-filter
+            (lambda (buffer)
+              (eq (buffer-local-value 'major-mode buffer) 'explain-pause-top-mode))
+            (buffer-list))))
+      ;; only one? pick it
+      (if (eq (length mode-buffers) 1)
+          (car mode-buffers)
+        (let ((buffer t))
+          ;; else, ask user to select
+          (while (eq buffer t)
+            (let ((buffer-completions
+                   (mapcar (lambda (buffer)
+                             (buffer-name buffer))
+                           mode-buffers)))
+              (setq buffer
+                    (completing-read "Explain-Pause-Top buffer: " buffer-completions
+                                     nil t nil nil t))))
+          (get-buffer buffer))))))
+
+(defun explain-pause-top-clear (buffer &optional refresh)
+  "Clear the statistics in an `explain-pause-top-mode' buffer, BUFFER.
+Optionally, REFRESH the buffer immediately, as well. if BUFFER is nil, the
+current buffer is used. In interactive mode, this function checks to see if the
+current buffer is an `explain-pause-top' buffer. If not, the user is prompted to
+select such a buffer if more then one exists. Also, in interactive mode, the
+buffer is refreshed immediately."
+  (interactive
+   (list (explain-pause-top--pick-interactive-buffer) t))
+
+  (unless buffer
+    (setq buffer (current-buffer)))
+  (when (eq (buffer-local-value 'major-mode buffer) 'explain-pause-top-mode)
+    (let ((table (buffer-local-value 'explain-pause-top--buffer-table buffer))
+          (stats (buffer-local-value 'explain-pause-top--buffer-statistics buffer)))
+      (clrhash stats)
+      (explain-pause-top--table-clear table))
+    (when refresh
+      (explain-pause-top--buffer-refresh-with-buffer buffer))))
+
 (defun explain-pause-top-auto-refresh (&optional buffer interval)
   "Turn on or off auto-refresh for the BUFFER, or the current buffer if
 nil. Does nothing if the buffer's major mode is not `explain-pause-top'. If
@@ -1455,30 +1533,8 @@ between refreshes. In interactive mode, if the current buffer is not a
 `explain-pause-top', and there is more then one buffer of that type, prompt the
 user to pick which one."
   (interactive
-   (let ((buffer t)
+   (let ((buffer (explain-pause-top--pick-interactive-buffer))
          (interval t))
-     ;; if the current buffer is a explain-pause, just pick that.
-     (if (eq major-mode 'explain-pause-top-mode)
-         (setq buffer nil)
-       ;; otherwise, make a list of top buffers
-       (let ((mode-buffers
-              (seq-filter
-               (lambda (buffer)
-                 (eq (buffer-local-value 'major-mode buffer) 'explain-pause-top-mode))
-               (buffer-list))))
-         ;; only one? pick it
-         (if (eq (length mode-buffers) 1)
-             (setq buffer (car mode-buffers))
-           ;; else, ask user to select
-           (while (eq buffer t)
-             (let ((buffer-completions
-                    (mapcar (lambda (buffer)
-                              (cons (buffer-name buffer)
-                                    buffer))
-                            mode-buffers)))
-               (setq buffer
-                     (completing-read "Explain-Pause-Top buffer: " buffer-completions
-                                      nil t nil nil t)))))))
      ;; pick interval
      (while (eq interval t)
        (let ((candidate
