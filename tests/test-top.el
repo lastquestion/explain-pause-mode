@@ -134,3 +134,42 @@
        entry-ca)
       :to-be
       t))))
+
+(describe
+ "explain-pause-top--split-at-space"
+
+ (it "does nothing when it fits"
+     (expect
+      (explain-pause-top--split-at-space "aaa" '(5))
+      :to-equal
+      '("aaa")))
+
+ (it "splits at the max-boundary when there is no spaces or commas"
+     (expect
+      (explain-pause-top--split-at-space "aaaaa" '(3))
+      :to-equal
+      '("aa\\" "aaa")))
+
+ (it "splits at least twice when there is no spaces or commas, and with no blank lines at the end"
+     (expect
+      (explain-pause-top--split-at-space "aaaabbbbccccc" '(4))
+      :to-equal
+      '("aaa\\" "abb\\" "bbc\\" "cccc")))
+
+ (it "splits at a space"
+     (expect
+      (explain-pause-top--split-at-space "aa bcd" '(3))
+      :to-equal
+      '("aa" "bcd")))
+
+ (it "splits two lines at space and max and space"
+     (expect
+      (explain-pause-top--split-at-space "aa bcdef gh" '(3))
+      :to-equal
+      '("aa" "bc\\" "def" "gh")))
+
+ (it "splits multiple max-lengths"
+     (expect
+      (explain-pause-top--split-at-space "abcdef ghi" '(2 10))
+      :to-equal
+      '("a\\" "bcdef ghi"))))

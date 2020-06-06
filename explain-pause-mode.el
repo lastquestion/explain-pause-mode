@@ -39,6 +39,7 @@
 
 (require 'seq)
 (require 'profiler)
+(require 'subr-x)
 
 ;; customizable behavior
 (defgroup explain-pause nil
@@ -918,6 +919,53 @@ adds '$' when there is more header either front or end."
             (substring header bounded-start bounded-end)
             end-dot-str)))
 
+(defun explain-pause-top--split-at-space (string max-lengths)
+  "Split a string at max-lengths or less, if possible, at a space boundary.If
+not possible, split at (car MAX-LENGTH) - 1 and add a \\ continuation. Use up
+MAX-LENGTHS until only one remains, which becomes the final max-length for
+the rest of the lines."
+  (save-match-data
+    (let* ((splits (split-string string " +" t))
+           (current-line-length 0)
+           (current-line nil)
+           (results nil))
+      (while splits
+        (let* ((this-split (car splits))
+               (this-length (length this-split))
+               (try (+ current-line-length this-length (length current-line)))
+               (this-max-length (car max-lengths)))
+          (if (<= try this-max-length)
+              ;; fits
+              (progn
+                (push this-split current-line)
+                (setq splits (cdr splits))
+                (setq current-line-length (+ current-line-length this-length)))
+            ;; doesn't fit
+            (if current-line
+                ;; some stuff filled, start a new line and try again
+                (push current-line results)
+              ;; cut the string up
+              (let* ((split-point (- this-max-length 1))
+                     (first-half (substring this-split 0 split-point))
+                     (second-half (substring this-split split-point)))
+                (push (list (concat first-half "\\")) results)
+                (setq splits (cons second-half (cdr splits)))))
+
+            ;; clear the line
+            (setq current-line nil)
+            (setq current-line-length 0)
+
+            ;; next max-length
+            (when (cdr max-lengths)
+              (setq max-lengths (cdr max-lengths))))))
+
+      (when current-line
+        (push current-line results))
+
+      (cl-loop
+       for line in (reverse results)
+       collect (string-join (reverse line) " ")))))
+
 (defun explain-pause-top--table-item-command-overflow
     (table column-widths command-string)
   "Return the truncated string for command in first row, and strings for
@@ -932,14 +980,15 @@ further lines, if needed."
         ;; make lists all the time.
         command-string
       ;; ok, truncate and split:
-      (let* ((table-width (explain-pause-top--table-width table))
-             (index (- command-column-width 1))
-             (first-line (concat (substring command-string 0 index) "\\"))
-             (rest-parts (seq-partition (substring command-string index)
-                                        (- table-width 3))) ;; 2 spaces + slash
-             ;; TODO probably should do this via proper ident systems...
-             (rest-lines (concat "\n  " (mapconcat #'identity rest-parts "\\\n  "))))
-        (cons first-line rest-lines)))))
+      (let ((lines
+             (explain-pause-top--split-at-space
+              command-string
+              (list command-column-width
+                    (- (explain-pause-top--table-width table) 2))))
+            (indent-newline "\n  "))
+        (cons (car lines)
+              (concat indent-newline
+                      (string-join (cdr lines) indent-newline)))))))
 
 (defun explain-pause-top--table-draw (table item force-full-line)
   "Redraw an item within it's bounds.
