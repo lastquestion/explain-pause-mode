@@ -86,16 +86,3 @@
               '(foo bar))
              :to-equal
              "foo, bar")))
-
-(describe
- "explain-pause--sanitize-minibuffer"
-
- (it "deletes extra normal spaces"
-     (expect (explain-pause--sanitize-minibuffer "  fo  g ")
-             :to-equal
-             " fo g "))
-
- (it "deletes newlines and tabs"
-     (expect (explain-pause--sanitize-minibuffer "\nevil\twow\t\n\nso")
-             :to-equal
-             " evil wow so")))
