@@ -578,10 +578,9 @@ the width cannot be 0."
   (let* ((display-order-ptr (cdr (explain-pause-top--table-entries table)))
          (display-entries-prev (explain-pause-top--table-display-entries table))
          (display-entries-ptr (cdr display-entries-prev))
-         (display-column-widths (explain-pause-top--table-column-widths table))
-         (column-count (length display-column-widths))
          (requested-widths (copy-sequence
                             (explain-pause-top--table-header-widths table)))
+         (column-count (length requested-widths))
          (layout-changed nil)
          (current-diffs (make-vector column-count nil)))
 
@@ -629,7 +628,7 @@ the width cannot be 0."
     ;; changed. If so, we'll force `draw` to draw full lines:
     ;; (TODO could we only paint things "after" the first change?)
     (when (or
-           (cl-mismatch display-column-widths
+           (cl-mismatch (explain-pause-top--table-column-widths table)
                         requested-widths
                         :start1 1
                         :start2 1
