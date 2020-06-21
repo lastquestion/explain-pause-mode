@@ -1874,14 +1874,18 @@ generated.  ORIGINAL-CALLBACK is the function to be wrapped."
 (defun explain--wrap-set-process-filter-callback (args)
   "Advise that modifies the arguments ARGS to `process-filter' by wrapping the callback."
   (seq-let [arg-process original-callback] args
-    (list arg-process
-          (explain--generate-wrapper (explain--generate-command-set 'process-filter) original-callback))))
+    (if (not original-callback)
+        args
+      (list arg-process
+            (explain--generate-wrapper (explain--generate-command-set 'process-filter) original-callback)))))
 
 (defun explain--wrap-set-process-sentinel-callback (args)
   "Advise that modifies the arguments ARGS to `process-sentinel' by wrapping the callback."
   (seq-let [arg-process original-callback] args
-    (list arg-process
-          (explain--generate-wrapper (explain--generate-command-set 'sentinel-filter) original-callback))))
+    (if (not original-callback)
+        args
+      (list arg-process
+            (explain--generate-wrapper (explain--generate-command-set 'sentinel-filter) original-callback)))))
 
 (defun explain--wrap-idle-timer-callback (args)
   "Advise that modifies the arguments ARGS to `run-with-idle-timer' by wrapping the callback."
