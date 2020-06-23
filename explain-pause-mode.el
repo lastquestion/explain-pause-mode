@@ -114,6 +114,11 @@ this will not clear statistics from individual `explain-top-mode' buffers."
   :type 'integer
   :group 'explain-pause-profiling)
 
+(defcustom explain-pause-profile-enabled t
+  "Should explain-pause profile slow activities at all?"
+  :type 'boolean
+  :group 'explain-pause-profiling)
+
 ;; public hooks
 (defvar explain-pause-measured-command-hook nil
   "Functions(s) to call after a command has been measured. The functions are
@@ -123,6 +128,8 @@ These commands must be fast, because this hook is executed on every command,
 not just slow commands. You cannot give up execution in these commands in
 any way, e.g. do not call any family of functions that `sit-for', `read-key',
 etc. etc.")
+(add-hook 'explain-pause-measured-command-hook
+          #'explain-pause-profile--profile-measured-command)
 
 ;; custom faces
 (defface explain-pause-top-slow
@@ -135,6 +142,12 @@ etc. etc.")
   '((t (:inherit warning)))
   "The face used to highlight the profile heading for commands which have
 profiles available to view."
+  :group 'explain-pause-top)
+
+(defface explain-pause-top-slow-heading
+  '((t (:inherit warning)))
+  "The face used to highlight the slow times heading for commands which have
+slow times."
   :group 'explain-pause-top)
 
 (defface explain-pause-top-changed
@@ -229,13 +242,71 @@ blocking execution (or we think so, anyway)."
    #'explain-pause--command-as-string
    command-set ", "))
 
-;; profiling functions
+;; profiling and slow statistics functions
 ;; TODO :equal list command
 (defvar explain-pause-profile--profile-statistics (make-hash-table)
-  "A hash map of the slow commands and their profiles and profile statistics only.
+  "A hash map of the slow commands and their statistics.
 
-This data is always gathered and stored when `explain-pause-mode' is active and
-`explain-pause-profile-enabled' is true.")
+This data is always gathered and stored when `explain-pause-mode' is
+active. When `explain-pause-profile-enabled' is true, profiling logs are also
+stored. Each entry is a VECTOR of values. In an effort to optimize memory
+allocations, store the slow counts inline with the rest of the object
+instead of using a cl-struct with a field of a vector.")
+
+(defconst explain-pause-profile--statistic-defaults
+  [0   ;; profile-counter
+   nil ;; should-profile-next
+   0   ;; profile-attempts
+   nil ;; list-of-profiles
+   0   ;; slow-count
+   nil];; slow-ms-idx
+  "A constant vector of defaults used when upset to the statistics hashmap is
+cnot required.")
+
+(defconst explain-pause-profile--statistic-slow-count-offset
+  6
+  "The offset into the vector of statistic where the first slow ms is found.")
+
+(defsubst explain-pause-profile--statistic-slow-length (statistic)
+  "Return the number of slow counts available in this STATISTIC"
+  (- (length statistic)
+     explain-pause-profile--statistic-slow-count-offset))
+
+(defsubst explain-pause-profile--statistic-profile-p (record)
+  "Whether the command represented by RECORD should be profiled. Does not create
+a new entry if the command has not been seen; in that case, returns nil."
+  (aref (gethash (explain-pause-command-record-command record)
+                 explain-pause-profile--profile-statistics
+                 explain-pause-profile--statistic-defaults)
+        1))
+
+(defsubst explain-pause-profile--statistic-profiles (record)
+  "Get the profiles for a command represented by RECORD."
+  (aref (gethash (explain-pause-command-record-command record)
+                 explain-pause-profile--profile-statistics
+                 explain-pause-profile--statistic-defaults)
+        3))
+
+(defsubst explain-pause-profile--statistic-profile-attempts (record)
+  "Get the attempts to profile for a command represented by RECORD."
+  (aref (gethash (explain-pause-command-record-command record)
+                 explain-pause-profile--profile-statistics
+                 explain-pause-profile--statistic-defaults)
+        2))
+
+(defsubst explain-pause-profile--statistic-slow-index (record)
+  "Get the current index of the circular list of slow times in RECORD."
+  (aref (gethash (explain-pause-command-record-command record)
+                 explain-pause-profile--profile-statistics
+                 explain-pause-profile--statistic-defaults)
+        5))
+
+(defsubst explain-pause-profile--statistic-slow-count (record)
+  "Get the current index of the circular list of slow times in RECORD."
+  (aref (gethash (explain-pause-command-record-command record)
+                 explain-pause-profile--profile-statistics
+                 explain-pause-profile--statistic-defaults)
+        4))
 
 (defun explain-pause-profile-clear ()
   "Clear the profiling data. Note that this does not clear profiles already visible
@@ -248,93 +319,105 @@ in any `explain-pause-top' buffers."
   ;;TODO (interactive)
   t)
 
-(defsubst explain-pause-profile--count (record)
-  "Get the count stored for command RECORD from the profile statistics.
+(defmacro explain-pause-profile--profile-get-statistic (record)
+  ;; define this as a macro because a defsubst cannot inline before the owning
+  ;; let has finished (e.g. this can't be inside the next closure and be used
+  ;; in `explain-pause-profile--profile-measured-command'
+  `(progn
+     (setq command (explain-pause-command-record-command ,record))
+     (setq statistic (gethash command explain-pause-profile--profile-statistics nil))
 
-This could be nil if the record has never been seen; -1 if the command has been
-set to MUST profile; otherwise a integer value representing how many times it
-has been slow."
-  (let* ((command (explain-pause-command-record-command record))
-         (statistic (gethash command explain-pause-profile--profile-statistics nil)))
-    (when statistic (aref statistic 0))))
+     (unless statistic
+       (setq statistic (make-vector
+                        (+ explain-pause-profile--statistic-slow-count-offset
+                           explain-pause-profile-saved-profiles)
+                        nil))
+       (cl-loop
+        for new-stat across-ref statistic
+        for default-stat across explain-pause-profile--statistic-defaults
+        do
+        (setf new-stat default-stat))
+       (puthash command statistic explain-pause-profile--profile-statistics))))
 
-(defsubst explain-pause-profile--get (record)
-  "Return the statistics for RECORD, which will be mutated over time. If the
-RECORD has never been seen before, this creates a new statistic for it."
-  (let* ((command (explain-pause-command-record-command record))
-         (statistic (gethash command
-                             explain-pause-profile--profile-statistics
-                             nil)))
-    (unless statistic
-      (setq statistic (vector 0 nil))
-      (puthash command statistic explain-pause-profile--profile-statistics))
+(let ((profile nil)
+      (statistic nil)
+      (command nil)
+      (slow-index nil))
+  ;; for the mainline case, no profiles are stored but values are incremented
+  ;; store these outside in a closure, so we don't need to create lets every call.
+  (defun explain-pause-profile--profile-measured-command (record)
+    "Record the statistics for this command.
 
-    statistic))
+Always store the slowness. If profiling is on, store the profiling counts.
+Store the profile if it was profiled."
+    (unless (explain-pause-command-record-native record)
+      (cond
+       ;; did we try to profile but it was too fast? if this happens more
+       ;; then threshold times, reset the counter back to 0
+       ((and (explain-pause-command-record-is-profiled record)
+             (not (explain-pause-command-record-too-slow record)))
 
-(defun explain-pause-profile--command-p (record)
-  "Should the command in RECORD be profiled?"
-  ;; TODO should we make this a subst for performance reasons? It runs in every
-  ;; command invocation...
-  (let ((count (explain-pause-profile--count record)))
-    (and count
-         (or (eq count -1) ;;forced
-             (>= count explain-pause-profile-slow-threshold)))))
+        (explain-pause-profile--profile-get-statistic record)
 
-(defun explain-pause-profile--profile-measured-command (record)
-  "Record the statistics for this command so we know whether to profile it later.
-Store the profile if the record was profiled."
-  (unless (explain-pause-command-record-native record)
-    (let ((ms (explain-pause-command-record-executing-time record)))
-      (when (> ms explain-pause-slow-too-long-ms)
-        (let* ((profile (explain-pause-command-record-profile record))
-               (statistic (explain-pause-profile--get record))
-               (count (aref statistic 0)))
+        ;; reuse profile var for attempt counter
+        (setq profile (aref statistic 2))
+        (if (< profile explain-pause-profile-saved-profiles)
+            (setf (aref statistic 2) (1+ profile))
+          ;; give up TODO force?
+          (setf (aref statistic 0) 0)
+          (setf (aref statistic 1) nil)
+          (setf (aref statistic 2) 0)))
 
-          (cond
-           ;; add the profile if it exists.
-           ;; we assume that profiles happen relatively rarely, so use
-           ;; a list so that 'eq comparisons work against head:
-           (profile
-            (let* ((head (aref statistic 1))
-                   (profiles-length (length head))
-                   (new-entry (vector ms profile)))
+       ((explain-pause-command-record-too-slow record)
+        ;; otherwise, if we're too slow...
+        (explain-pause-profile--profile-get-statistic record)
+        (setq profile (explain-pause-command-record-profile record))
 
-              (setf (aref statistic 1)
-                    (if (< profiles-length explain-pause-profile-saved-profiles)
-                        (cons new-entry head)
-                      ;; need to make a duplicate list
-                      (cons new-entry
-                            (seq-take head
-                                      (- explain-pause-profile-saved-profiles 1))))))
+        ;; increment the slow count
+        (setf (aref statistic 4) (1+ (aref statistic 4)))
 
-              ;; don't forget to clear out the count
-              (setf (aref statistic 0) 0))
-           ((>= count 0) ;; only increment for "non-special" counts
-            (setf (aref statistic 0) (1+ count)))))))))
+        ;; save the ms into the circular list
+        (setq slow-index (or (aref statistic 5) 0))
+        (setf (aref statistic (+ slow-index
+                                 explain-pause-profile--statistic-slow-count-offset))
+              (explain-pause-command-record-executing-time record))
+        ;; increment slow-ms-index to the next place
+        (setf (aref statistic 5)
+              (% (1+ slow-index)
+                 ;; don't use `explain-pause-profile-saved-profiles' because the value
+                 ;; might have changed
+                 (explain-pause-profile--statistic-slow-length statistic)))
 
-(defun explain-pause-profile-enable (enable)
-  "Disable profiling if ENABLE is nil, enable otherwise. Disabling or enabling
-profiling does not remove existing profiles or profile statistics."
-  (cond
-   (enable
-    (add-hook 'explain-pause-measured-command-hook
-              #'explain-pause-profile--profile-measured-command))
-   (t
-    (remove-hook 'explain-pause-measured-command-hook
-                 #'explain-pause-profile--profile-measured-command)
-    t)))
+        (cond
+         ;; add the profile if it exists.
+         ;; we assume that profiles happen relatively rarely, so it's ok to use
+         ;; a list so that 'eq comparisons work against head:
+         (profile
+          (let ((head (aref statistic 3))
+                (new-entry (vector
+                            (explain-pause-command-record-executing-time record)
+                            profile)))
 
-(defcustom explain-pause-profile-enabled t
-  "Should explain-pause profile slow activities at all?
+            (setf (aref statistic 3)
+                  (if (< (length head)
+                         explain-pause-profile-saved-profiles)
+                      (cons new-entry head)
+                    ;; need to make a duplicate list
+                    (cons new-entry
+                          (seq-take head
+                                    (- explain-pause-profile-saved-profiles 1))))))
 
-Changing this immediately adjusts the behavior. You can do this manually by
-calling `explain-pause-profile-enable' directly. Note that calling that
-function does not change this value."
-  :type 'boolean
-  :group 'explain-pause-profiling
-  :set (lambda (symbol val)
-         (set-default symbol val)
-         (explain-pause-profile-enable val)))
+          ;; reset for next time
+          (setf (aref statistic 0) 0)
+          (setf (aref statistic 1) nil))
+         (t
+          ;; reuse profile var for the counter here
+          (setq profile (aref statistic 0))
+          (when (>= profile 0) ;; only increment for "non-special" counts
+            (setq profile (1+ profile))
+            (setf (aref statistic 0) profile)
+            (setf (aref statistic 1)
+                  (>= profile explain-pause-profile-slow-threshold))))))))))
 
 ;; table functions
 ;; I tried to use `tabulated-list' as well as `ewoc' but I decided to implement
@@ -883,7 +966,8 @@ hold the difference of fields."
   "Refresh the table of items in the current buffer when requested. Note that
 the width cannot be 0."
   ;; this is relatively optimized never to allocate memory unless absolutely
-  ;; needed.
+  ;; needed. it tries to hoist lets out of tight loops and generally
+  ;; preallocates memory in table-initialize.
   ;;
   ;; first, calculate the widths of all the columns.
   ;; To do this, now walk through all the entries, updating their current
@@ -933,31 +1017,34 @@ the width cannot be 0."
 
     ;; ok, now reconcile & add new items
     ;; prev points to the end now
-    (let ((new-list-entry nil)
-          (new-entry nil))
-      (while display-order-ptr
-        (setq new-entry
-              (make-explain-pause-top--table-display-entry
-               :begin-mark nil
-               :total-length nil
-               :buffer (make-vector (* 2 buffer-width) nil)
-               :dirty-fields (make-vector field-count nil)))
-        (setq new-list-entry (cons new-entry nil))
+    ;; most of the time, we don't need to add new items, so
+    ;; check before letting:
+    (when display-order-ptr
+      (let ((new-list-entry nil)
+            (new-entry nil))
+        (while display-order-ptr
+          (setq new-entry
+                (make-explain-pause-top--table-display-entry
+                 :begin-mark nil
+                 :total-length nil
+                 :buffer (make-vector (* 2 buffer-width) nil)
+                 :dirty-fields (make-vector field-count nil)))
+          (setq new-list-entry (cons new-entry nil))
 
-        (explain-pause-top--table-prepare-draw
-         new-entry
-         (car display-order-ptr)
-         buffer-index
-         prev-buffer-index
-         column-count
-         field-count
-         requested-widths
-         current-diffs)
+          (explain-pause-top--table-prepare-draw
+           new-entry
+           (car display-order-ptr)
+           buffer-index
+           prev-buffer-index
+           column-count
+           field-count
+           requested-widths
+           current-diffs)
 
-        ;; insert at the tail
-        (setcdr display-entries-prev new-list-entry)
-        (setq display-entries-prev new-list-entry)
-        (setq display-order-ptr (cdr display-order-ptr))))
+          ;; insert at the tail
+          (setcdr display-entries-prev new-list-entry)
+          (setq display-entries-prev new-list-entry)
+          (setq display-order-ptr (cdr display-order-ptr)))))
 
     ;; at this point, the following invariants hold:
     ;; * every entry has a display-entry (but not all of them have begin-marks)
@@ -972,13 +1059,6 @@ the width cannot be 0."
                         :start1 1
                         :start2 1
                         :test 'eq))
-
-      (when explain-pause-log--send-process
-        (process-send-string
-         explain-pause-log--send-process
-         (format "widths changed %s %s\n"
-                 requested-widths
-                  (explain-pause-top--table-column-widths table))))
 
       ;; if they are not equal, update the header, format strings, etc.
       (explain-pause-top--table-resize-columns
@@ -1060,11 +1140,18 @@ the width cannot be 0."
                  (first-command-str (or (car cmd-lines)
                                         command-str))
 
-                 (profile-lines (aref buffer (+ buffer-value-index 6)))
+                 (slow-lines (aref buffer (+ buffer-value-index 6)))
+                 (profile-lines (aref buffer (+ buffer-value-index 7)))
 
                  (extra-lines (concat
                                (cdr cmd-lines)
-                               ;;TODO special profile handling here
+                               ;;TODO clean up multiline handling
+                               ;;TODO stop regenerating this every time (?)
+                               (when slow-lines
+                                 (explain-pause-top--concat-to-width
+                                  slow-lines
+                                  table-width
+                                  "\n "))
                                (when profile-lines
                                  (explain-pause-top--concat-to-width
                                   profile-lines
@@ -1086,7 +1173,7 @@ the width cannot be 0."
                                 extra-lines)))
 
             ;; store the cached cmd-lines
-            ;; TODO
+            ;; TODO cmd line magic
             (setf (aref buffer (+ buffer-value-index 5)) cmd-lines)
 
             ;; go to the beginning of our region
@@ -1153,15 +1240,23 @@ the width cannot be 0."
                       (delete-char (length new-str))
                       (insert new-str)))))))
 
-          ;; now deal with extra lines. only bother if either of the two
-          ;; columns are dirty.
+          ;; now deal with extra lines. only bother if at least is dirty.
           (when (or (aref dirty-fields 0)
-                    (aref dirty-fields 6))
+                    (aref dirty-fields 6)
+                    (aref dirty-fields 7))
             (let* ((extra-cmd-lines
-                    (cdr (aref buffer (+ buffer-value-index 5)))) ;; TODO
-                   (profile-lines (aref buffer (+ buffer-value-index 6)))
+                    (cdr (aref buffer (+ buffer-value-index 5)))) ;; TODO cmd handling
+                   ;; TODO multline handling
+                   (slow-lines (aref buffer (+ buffer-value-index 6)))
+                   (profile-lines (aref buffer (+ buffer-value-index 7)))
                    (extra-lines
+                    ;; TODO dry with full line gen?
                     (concat extra-cmd-lines
+                            (when slow-lines
+                              (explain-pause-top--concat-to-width
+                               slow-lines
+                               table-width
+                               "\n "))
                             (when profile-lines
                               (explain-pause-top--concat-to-width
                                profile-lines
@@ -1219,6 +1314,8 @@ the width cannot be 0."
   (executing-time 0)
   ;; a TIME object as snap
   entry-snap
+  ;; was this too slow
+  too-slow
 
   ;; profiling:
   ;; was profiling was started FOR this command
@@ -1230,11 +1327,6 @@ the width cannot be 0."
 
   ;; depth of the callstack so far
   depth)
-
-(defsubst explain-pause--command-record-slow-p (record)
-  "Is the record slow, e.g. longer then `explain-pause-slow-too-long-ms'?"
-  (> (explain-pause-command-record-executing-time record)
-     explain-pause-slow-too-long-ms))
 
 (defconst explain-pause-root-command-loop
   (make-explain-pause-command-record
@@ -1287,6 +1379,8 @@ to watch for resizes.")
   total-ms
   ;; either nil for no, t for yes, 'new for yes and new.
   dirty
+  ;; index into the slow circular list
+  slow-index
   ;; pointer to the profiles
   profiles)
 
@@ -1416,8 +1510,19 @@ explain-pause-top-changed face, otherwise just return STR-EXR"
   "The heading used when there is one profile available.")
 
 (defconst explain-pause-top--multiple-profile-header
-  (propertize "\n ► Last %d profiles:" 'face 'explain-pause-top-profile-heading)
+  ;; these strings ought to be propertized, but format does not work correctly
+  ;; for multibyte strings in emacs <27 (bug#38191). propertize after format
+  ;; instead.
+  "\n ► Last %d profiles:"
   "The heading used when there are multiple profiles available.")
+
+(defconst explain-pause-top--single-slow-header
+  (propertize "\n ► Slow:" 'face 'explain-pause-top-slow-heading)
+  "The heading used when there is one slow time available.")
+
+(defconst explain-pause-top--multiple-slow-header
+  "\n ► Last %d slow:"
+  "The heading used when there are multiple slow times available.")
 
 (defconst explain-pause-top--n/a-value -1
   "The sentinel value that means no value is available yet for this number field.")
@@ -1495,10 +1600,65 @@ same."
                (eq cmd-diff 'explain-pause-top--table-prev-drawn))
            cmd-diff
          'explain-pause-top--table-generate)))
+    ((slow-index ;; slow ms
+      ;; dirtiness doesn't matter, but the index PLUS object must be the same
+      ;; nil represents no results
+      (cond
+       ((not field-val)
+        nil)
+       ((and prev-item
+             (eq prev-val field-val)
+             (eq (aref field-diffs 0) 'explain-pause-top--table-prev-item))
+        'explain-pause-top--table-prev-item)
+       ((and prev-drawn-item
+             (eq prev-drawn-val field-val)
+             (eq (aref field-diffs 0) 'explain-pause-top--table-prev-drawn))
+        'explain-pause-top--table-prev-drawn)
+       (t
+        ;; TODO directly using cmd ... hm :/
+        ;; TODO command-list
+        ;; the circular list's "next" place is at field-val aka slow-index.
+        ;; this represents the very oldest item, so we can build the list in
+        ;; reverse by walking forwards in the circular list.
+        (let* ((statistics
+                (gethash (car (explain-pause-top--command-entry-command-set new-item))
+                         explain-pause-profile--profile-statistics))
+               (size (explain-pause-profile--statistic-slow-length statistics))
+               (items-length 0)
+               (items (cons "ms" nil))
+               (index field-val)
+               (slot nil))
+
+          (cl-loop
+           do
+           (setq slot (aref statistics
+                            (+ explain-pause-profile--statistic-slow-count-offset
+                               index)))
+           (when slot
+             (setq items (cons (format
+                                (if (eq items-length 0)
+                                    "%s" ;; no comma for the last (aka first)
+                                  "%s,")
+                                slot)
+                               items))
+             (setq items-length (1+ items-length)))
+           (setq index (% (+ index 1) size))
+           until (eq index field-val))
+
+          (cons
+           (if (eq items-length 1)
+               explain-pause-top--single-slow-header
+             ;; emacs bug #38191, <27
+             (propertize
+              (format explain-pause-top--multiple-slow-header items-length)
+              'face 'explain-pause-top-slow-heading))
+           items))))))
     ((profiles
       ;; as the lists are different if any profile inside is changed, we don't need
       ;; to account for dirtiness for this field.
       (cond
+       ((not field-val)
+        nil)
        ((and prev-item
              (eq prev-val field-val))
         'explain-pause-top--table-prev-item)
@@ -1506,23 +1666,23 @@ same."
              (eq prev-drawn-val field-val))
         'explain-pause-top--table-prev-drawn)
        (t
-        (when field-val
-          ;; ok, actually generate it:
-          (let ((count (length field-val)))
-            (cons
-             (if (eq count 1)
-                 explain-pause-top--single-profile-header
-               (format
-                explain-pause-top--multiple-profile-header
-                count))
-             ;;TODO stop making these every time dirty column
-             (mapcar (lambda (profile-info)
-                       (make-text-button
-                        (format "[%.2f ms]" (aref profile-info 0))
-                        nil
-                        'action #'explain-profile-top--click-profile-report
-                        'profile (aref profile-info 1)))
-                     field-val))))))))))
+        ;; ok, actually generate it:
+        (let ((count (length field-val)))
+          (cons
+           (if (eq count 1)
+               explain-pause-top--single-profile-header
+             ;; emacs bug #38191, <27
+             (propertize
+              (format explain-pause-top--multiple-profile-header count)
+              'face 'explain-pause-top-profile-heading))
+           ;;TODO stop making these every time dirty column
+           (mapcar (lambda (profile-info)
+                     (make-text-button
+                      (format "[%.2f ms]" (aref profile-info 0))
+                      nil
+                      'action #'explain-profile-top--click-profile-report
+                      'profile (aref profile-info 1)))
+                   field-val)))))))))
 
   ;; copy the dirtiness separately as it's not covered in the field set
   (setf (explain-pause-top--command-entry-dirty state-to-fill)
@@ -1570,7 +1730,7 @@ within 15 minutes of the last time an alert was shown; or
 alerts have occurred, AND the time since the last notification (or startup)
 is greater then `explain-pause-alert-normal-interval' minutes."
     (when (and (not (explain-pause-command-record-native record))
-               (explain-pause--command-record-slow-p record))
+               (explain-pause-command-record-too-slow record))
       (setq notification-count (1+ notification-count))
       (when (and (>= notification-count explain-pause-alert-normal-minimum-count)
                  (> (float-time (time-subtract nil last-notified))
@@ -1598,17 +1758,16 @@ fire again and this timer will be called again."
     "Log all slow and profiling alerts in developer mode. They are gathered until
 run-with-idle-timer allows an idle timer to run, and then they are printed
 to the minibuffer with a 2 second sit-for."
-    (unless (explain-pause-command-record-native record)
-      (let ((ms (explain-pause-command-record-executing-time record)))
-        (when (> ms explain-pause-slow-too-long-ms)
-          (push ms notifications)
-          (when (explain-pause-command-record-profile record)
-            (setq profiled-count (1+ profiled-count)))
-          (unless alert-timer
-            (setq alert-timer
-                  (run-with-idle-timer
-                   0.5 nil
-                   #'explain-pause-mode--log-alert-developer-display)))))))
+    (when (and (not (explain-pause-command-record-native record))
+               (explain-pause-command-record-too-slow record))
+      (push (explain-pause-command-record-executing-time record) notifications)
+      (when (explain-pause-command-record-profile record)
+        (setq profiled-count (1+ profiled-count)))
+      (unless alert-timer
+        (setq alert-timer
+              (run-with-idle-timer
+               0.5 nil
+               #'explain-pause-mode--log-alert-developer-display)))))
 
   (defun explain-pause-mode--log-alert-developer-display ()
     "Display the last set of notifications in the echo area when the minibuffer is
@@ -1679,8 +1838,8 @@ is made `explain-pause-top-mode', `explain-pause-mode' is also enabled."
    explain-pause-top--buffer-table
    (copy-sequence explain-pause-top--command-entry-headers)
    ;; 3 extra slots
-   ;; - cmd main line
-   ;; - cmd extra lines
+   ;; - cmd lines
+   ;; - slow lines
    ;; - profile lines
    (+ (length explain-pause-top--command-entry-headers) 3))
 
@@ -1690,70 +1849,85 @@ is made `explain-pause-top-mode', `explain-pause-mode' is also enabled."
   ;; TODO hardcoded col index
   (explain-pause-top--apply-sort 1 t)
 
-  (let ((this-buffer (current-buffer)))
-    (when explain-pause-top--buffer-window-size-changed
-      (remove-hook 'window-size-change-functions
-                   explain-pause-top--buffer-window-size-changed))
+  (when explain-pause-top--buffer-window-size-changed
+    (remove-hook 'window-size-change-functions
+                 explain-pause-top--buffer-window-size-changed))
 
-    (setq-local explain-pause-top--buffer-window-size-changed
+  (setq-local explain-pause-top--buffer-window-size-changed
+              (let ((this-buffer (current-buffer)))
                 (lambda (_)
                   ;; ignore frame, and recalculate the width across all frames
                   ;; every time. we always need the biggest.
                   (explain-pause-top--buffer-update-width-from-windows
                    this-buffer))))
 
-  (let ((this-commands explain-pause-top--buffer-statistics))
-    (when explain-pause-top--buffer-command-pipe
-      (remove-hook 'explain-pause-measured-command-hook
-                   explain-pause-top--buffer-command-pipe))
+  (when explain-pause-top--buffer-command-pipe
+    (remove-hook 'explain-pause-measured-command-hook
+                 explain-pause-top--buffer-command-pipe))
 
-    (setq-local
-     explain-pause-top--buffer-command-pipe
+  (setq-local
+   explain-pause-top--buffer-command-pipe
+   (let ((this-commands explain-pause-top--buffer-statistics)
+         ;; store these in the closure so we don't reallocate every command
+         (command-set nil)
+         (entry nil)
+         (new-count nil)
+         (new-ms nil))
      (lambda (record)
+       ;; this lambda is called ON EVERY SINGLE COMMAND is it is important
+       ;; to not use a let and allocate the minimum required.
        ;; ignore native frames for now - TODO
        (unless (explain-pause-command-record-native record)
-         (let* ((ms (explain-pause-command-record-executing-time record))
-                ;;TODO command-set list.
-                (command-set (list (explain-pause-command-record-command record)))
-                (entry (gethash command-set this-commands nil))
-                (this-slow-count
-                 (if (> ms explain-pause-slow-too-long-ms) 1 0))
-                (profiles (aref (explain-pause-profile--get record) 1)))
-           (if entry
-               ;; update.
-               (let*
-                   ((old-count
-                     (explain-pause-top--value-or-n/a-default
-                      (explain-pause-top--command-entry-count entry)))
-                    (old-ms
-                     (explain-pause-top--value-or-n/a-default
-                      (explain-pause-top--command-entry-total-ms entry)))
-                    (slow-count
-                     (explain-pause-top--command-entry-slow-count entry))
-                    (new-count (1+ old-count))
-                    (new-slow-count (+ slow-count this-slow-count))
-                    (new-ms (+ ms old-ms))
-                    (new-avg (/ (float new-ms) (float new-count))))
-                 (setf (explain-pause-top--command-entry-count entry) new-count)
-                 (setf (explain-pause-top--command-entry-slow-count entry) new-slow-count)
-                 (setf (explain-pause-top--command-entry-total-ms entry) new-ms)
-                 (setf (explain-pause-top--command-entry-avg-ms entry) new-avg)
-                 (setf (explain-pause-top--command-entry-profiles entry) profiles)
-                 (setf (explain-pause-top--command-entry-dirty entry) t))
-             ;; new.
-             (setq entry (make-explain-pause-top--command-entry
-                          :command-set command-set
-                          :count 1
-                          :avg-ms ms
-                          :total-ms ms
-                          :slow-count this-slow-count
-                          :dirty 'new
-                          :profiles profiles)))
+         ;; TODO command-list
+         (setq command-set (list (explain-pause-command-record-command record)))
+         (setq entry (gethash command-set this-commands nil))
+         (cond
+          (entry
+           ;; update.
+           (setq new-count (1+ (explain-pause-top--value-or-n/a-default
+                                (explain-pause-top--command-entry-count entry))))
 
-             (puthash command-set entry this-commands)))))
+           (setq new-ms (+ (explain-pause-command-record-executing-time record)
+                           (explain-pause-top--value-or-n/a-default
+                            (explain-pause-top--command-entry-total-ms entry))))
 
-    (add-hook 'explain-pause-measured-command-hook
-              explain-pause-top--buffer-command-pipe t))
+           (setf (explain-pause-top--command-entry-count entry) new-count)
+           (setf (explain-pause-top--command-entry-total-ms entry) new-ms)
+           (setf (explain-pause-top--command-entry-avg-ms entry)
+                 (/ (float new-ms) (float new-count)))
+
+           (setf (explain-pause-top--command-entry-slow-count entry)
+                 (+  (explain-pause-top--command-entry-slow-count entry)
+                     (if (explain-pause-command-record-too-slow record) 1 0)))
+
+           (setf (explain-pause-top--command-entry-profiles entry)
+                 (explain-pause-profile--statistic-profiles record))
+
+           (setf (explain-pause-top--command-entry-slow-index entry)
+                 (explain-pause-profile--statistic-slow-index record))
+
+           (setf (explain-pause-top--command-entry-dirty entry) t))
+          (t
+           ;; new.
+           (puthash command-set
+                    (make-explain-pause-top--command-entry
+                     :command-set command-set
+                     :count 1
+                     :avg-ms
+                     (explain-pause-command-record-executing-time record)
+                     :total-ms
+                     (explain-pause-command-record-executing-time record)
+                     :slow-count
+                     (if (explain-pause-command-record-too-slow record) 1 0)
+                     :dirty 'new
+                     :slow-index
+                     (explain-pause-profile--statistic-slow-index record)
+                     :profiles
+                     (explain-pause-profile--statistic-profiles record))
+                    this-commands)))))))
+
+  (add-hook 'explain-pause-measured-command-hook
+            explain-pause-top--buffer-command-pipe t)
 
   (add-hook 'window-size-change-functions
               explain-pause-top--buffer-window-size-changed)
@@ -1773,22 +1947,21 @@ is made `explain-pause-top-mode', `explain-pause-mode' is also enabled."
   (unless explain-pause-mode
     (explain-pause-mode))
 
-  ;; create entries for all slow profiles
+  ;; create entries for all slow commands
   (maphash (lambda (command statistic)
-             (let ((command-set (list command)) ;; TODO command-set list
-                   (profiles (aref statistic 1)))
-
-               (when profiles
+             ;; TODO abstraction for statistic?
+             (when (> (aref statistic 4) 0)
+               (let ((command-set (list command))) ;; TODO command-set list
                  (puthash command-set
                           (make-explain-pause-top--command-entry
                            :command-set command-set
                            :count explain-pause-top--n/a-value
-                           ;; TODO we should improve this once we get slow ms list
-                           :slow-count (length profiles)
+                           :slow-count (aref statistic 4)
                            :avg-ms explain-pause-top--n/a-value
                            :total-ms explain-pause-top--n/a-value
                            :dirty 'new
-                           :profiles profiles)
+                           :slow-index (aref statistic 5)
+                           :profiles (aref statistic 3))
                           explain-pause-top--buffer-statistics))))
            explain-pause-profile--profile-statistics)
 
@@ -1829,11 +2002,6 @@ is made `explain-pause-top-mode', `explain-pause-mode' is also enabled."
   (with-current-buffer buffer
     ;; clear the timer as we just ran
     (setq-local explain-pause-top--buffer-refresh-timer nil)
-      (when explain-pause-log--send-process
-        (process-send-string
-         explain-pause-log--send-process
-         (format "enter w current buffer %s\n"
-                  (current-time))))
 
     (explain-pause-top--buffer-refresh)
     (explain-pause-top--buffer-reschedule-timer)))
@@ -1843,34 +2011,21 @@ is made `explain-pause-top-mode', `explain-pause-mode' is also enabled."
   (with-current-buffer buffer
     (explain-pause-top--buffer-refresh)))
 
+(defsubst explain-pause-top--buffer-upsert-entry (_ item)
+  "Upsert an item from the map of entries in a buffer."
+  ;; deliberately call aref twice instead of letting a new scope.
+  ;; this is in a very tight loop.
+  (cond
+   ((eq (explain-pause-top--command-entry-dirty item) 'new)
+    (explain-pause-top--table-insert explain-pause-top--buffer-table item))
+   ((explain-pause-top--command-entry-dirty item)
+    (explain-pause-top--table-update explain-pause-top--buffer-table item))))
+
 (defun explain-pause-top--buffer-refresh ()
   "Refresh the current buffer - redraw the data at the current target-width"
   ;; first, insert all the items
-  ;; TODO: is this slow? no documentation on cost of iteration
-  (when explain-pause-log--send-process
-    (process-send-string
-     explain-pause-log--send-process
-     (format "refresh enter %s\n"
-             (current-time))))
-
-  (let ((addcount 0)
-        (updatecount 0))
-    (maphash
-     (lambda (_ item)
-       (let ((dirty (explain-pause-top--command-entry-dirty item)))
-         (cond
-          ((eq dirty 'new)
-           (explain-pause-top--table-insert explain-pause-top--buffer-table item)
-           (setq addcount (1+ addcount)))
-          (dirty
-           (explain-pause-top--table-update explain-pause-top--buffer-table item)
-           (setq updatecount (1+ updatecount))
-           ))))
-     explain-pause-top--buffer-statistics)
-    (when explain-pause-log--send-process
-      (process-send-string
-       explain-pause-log--send-process
-       (format "finish map %s %d %d\n" (current-time) addcount updatecount))))
+  (maphash #'explain-pause-top--buffer-upsert-entry
+           explain-pause-top--buffer-statistics)
 
   ;; It's possible a refresh timer ran before/after we calculated size, if so,
   ;; don't try to draw yet.
@@ -1878,27 +2033,13 @@ is made `explain-pause-top-mode', `explain-pause-mode' is also enabled."
     (let ((inhibit-read-only t)
           (point-in-entry (explain-pause-top--display-entry-from-point)))
       (save-match-data
-        (when explain-pause-log--send-process
-          (process-send-string
-           explain-pause-log--send-process
-           (format "before refresh %s\n"
-                   (current-time))))
-
         (explain-pause-top--table-refresh explain-pause-top--buffer-table)
 
         ;; move the cursor back
         (when point-in-entry
           (goto-char (+ (explain-pause-top--table-display-entry-begin-mark
                          (car point-in-entry))
-                        (cdr point-in-entry))))
-
-        (when explain-pause-log--send-process
-          (process-send-string
-           explain-pause-log--send-process
-           (format "after refresh %s %s\n"
-                   (current-time)
-                   (memory-use-counts)
-                   )))))))
+                        (cdr point-in-entry))))))))
 
 (defun explain-pause-top--buffer-window-config-changed ()
   "Buffer-local hook run when window config changed for a window showing
@@ -2150,10 +2291,12 @@ If you change this value, the filename you specify must be writable by Emacs."
   (when explain-pause-log--send-process
     (process-send-string
      explain-pause-log--send-process
-     (format "('profile-start %s %s %d)\n"
+     (format "('profile-start %s %s %s)\n"
              (current-time)
              (explain-pause-command-record-command record)
-             (explain-pause-profile--count record)))))
+             ;; TODO - abstraction layer?
+             (gethash (explain-pause-command-record-command record)
+                      explain-pause-profile--profile-statistics)))))
 
 (defsubst explain-pause-log--send-profile-end (record)
   "Send the fact that we are ending profiling to the send pipe"
@@ -2204,13 +2347,12 @@ and when execution contexts switch, (e.g. timer <-> command loop).")
 ;; most related actions here are inline subsitutions for performance reasons
 (defsubst explain-pause--command-record-and-store (record)
   "Calculate the time since entry-snap of RECORD and add it to executing-time."
-  (let ((so-far (explain-pause-command-record-executing-time record)))
-    (setf (explain-pause-command-record-executing-time record)
-          (+ so-far
-             (explain-pause--as-ms-exact
-              (time-subtract
-               (current-time)
-               (explain-pause-command-record-entry-snap record)))))))
+  (setf (explain-pause-command-record-executing-time record)
+        (+ (explain-pause-command-record-executing-time record)
+           (explain-pause--as-ms-exact
+            (time-subtract
+             (current-time)
+             (explain-pause-command-record-entry-snap record))))))
 
 (defsubst explain-pause--command-record-start-profiling (record)
   "Start profiling and record that in RECORD."
@@ -2226,7 +2368,8 @@ and when execution contexts switch, (e.g. timer <-> command loop).")
   ;; make-profile:
   (profiler-cpu-stop)
   ;; only bother saving the profile if it was slow:
-  (when (explain-pause--command-record-slow-p record)
+  (when (> (explain-pause-command-record-executing-time record)
+           explain-pause-slow-too-long-ms)
     (setf (explain-pause-command-record-profile record)
           (profiler-make-profile
            :type 'cpu
@@ -2236,11 +2379,12 @@ and when execution contexts switch, (e.g. timer <-> command loop).")
 
 (defsubst explain-pause--command-record-profile-p (record)
   "Should the command-record RECORD be profiled, taking into account existing
-profiling conditions and nativeness? Calls `explain-pause-profile--command-p' as
-part of this determination."
-  (and (not (explain-pause-command-record-native record))
+profiling conditions and nativeness? Calls
+`explain-pause-profile--statistic-profile-p' as part of this determination."
+  (and explain-pause-profile-enabled
+       (not (explain-pause-command-record-native record))
        (not (explain-pause-command-record-under-profile record))
-       (explain-pause-profile--command-p record)))
+       (explain-pause-profile--statistic-profile-p record)))
 
 (defsubst explain-pause--command-record-from-parent
   (current-command parent command &optional native)
@@ -2296,6 +2440,13 @@ protect.  After, pause-and-store the RECORD, and verify that
               ,record)
            ,@body)))))
 
+(defsubst explain-pause--run-measure-hook (new-frame)
+  "Finalize frame and send it to the measure hook"
+  (setf (explain-pause-command-record-too-slow new-frame)
+        (> (explain-pause-command-record-executing-time new-frame)
+           explain-pause-slow-too-long-ms))
+  (run-hook-with-args 'explain-pause-measured-command-hook new-frame))
+
 (defmacro explain-pause--pause-call-unpause (new-record-form function-form)
   "Pause current record; create a new record using NEW-RECORD-FORM;
 `explain-pause--set-command-call' FUNCTION-FORM; run
@@ -2309,7 +2460,7 @@ is bound throughout as the current record."
         new-frame
         ,function-form
 
-        (run-hook-with-args 'explain-pause-measured-command-hook new-frame)
+        (explain-pause--run-measure-hook new-frame)
 
         (setf (explain-pause-command-record-entry-snap current-record)
               (current-time))
@@ -2474,18 +2625,18 @@ a native frame."
                target-function) ;; hm, TODO polymorphic type..
 
             ;; top-frame = the real frame. exit:
-
             (explain-pause--command-record-and-store top-frame)
             ;; if we profiled, save it:
             (when (explain-pause-command-record-is-profiled top-frame)
               (explain-pause--command-record--save-and-stop-profiling top-frame))
             (explain-pause-log--send-command-exit top-frame)
-            (run-hook-with-args 'explain-pause-measured-command-hook top-frame)
+            (explain-pause--run-measure-hook top-frame)
 
             ;; exit the parent frame (the command-frame from this function)
             ;; since we don't bother restarting, we don't need to pause-and-store
             (explain-pause-log--send-command-exit command-frame)
-            (run-hook-with-args 'explain-pause-measured-command-hook command-frame))
+            (explain-pause--run-measure-hook command-frame))
+
           ;; no extra-frame, top-frame = command-frame
           (if (not (eq top-frame command-frame))
               (explain-pause-report-measuring-bug
@@ -2497,7 +2648,7 @@ a native frame."
             (when (explain-pause-command-record-is-profiled command-frame)
               (explain-pause--command-record--save-and-stop-profiling command-frame))
             (explain-pause-log--send-command-exit command-frame)
-            (run-hook-with-args 'explain-pause-measured-command-hook command-frame))))
+            (explain-pause--run-measure-hook command-frame))))
 
       ;; restart parent
       (unless (eq parent explain-pause-root-command-loop)
