@@ -76,7 +76,13 @@
      (expect (explain-pause--command-as-string
               10)
               :to-equal
-              "Unknown (please file a bug)")))
+              "Unknown (please file a bug)"))
+
+ (it "works for subrp"
+     (expect (explain-pause--command-as-string
+              (symbol-function 'read-char))
+             :to-equal
+             "#<subr read-char>")))
 
 (describe
  "explain-pause--command-set-as-string"

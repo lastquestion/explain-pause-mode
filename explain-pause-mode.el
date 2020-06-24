@@ -41,6 +41,7 @@
 (require 'profiler)
 (require 'subr-x)
 (require 'nadvice)
+(require 'cl-macs)
 
 ;; customizable behavior
 (defgroup explain-pause nil
@@ -1775,8 +1776,10 @@ not active."
     (if (minibufferp (current-buffer))
         ;; try again
         (setq alert-timer
-              (run-with-idle-timer 0.5 nil
-                                   #'explain-pause-mode--log-alert-developer-display))
+              (run-with-idle-timer
+               (time-add (current-idle-time) 0.5)
+               nil
+               #'explain-pause-mode--log-alert-developer-display))
       ;; ok, let's draw
       (message "Emacs was slow: %s ms%s%s"
                (mapconcat #'number-to-string notifications ", ")
@@ -2470,36 +2473,35 @@ is bound throughout as the current record."
 (defsubst explain-pause--interactive-form-needs-frame-p (form)
   "Calculate, as quickly as possible, whether this interactive form needs
 a native frame."
-  ;; deliberately order p's first, then check for common forms, then do a
-  ;; expensive per character check.
+  ;; Walk through the characters and quit as early as possible.
+  (cl-loop
+   for char across form
+   with next-newline = nil
+   do
+   (cond
+    (next-newline
+     (when (eq char ?\n)
+       (setq next-newline nil)))
 
-  ;; TODO read the bytecode, is this actually fastest? should we use a `cond'
-  ;; maybe this should be a linear scanner? hypothetically this should be
-  ;; O(test string length but this is clearly O(N of test characters)
-  (and (not (equal form "p"))
-       (not (equal form "P"))
-       ;; found in emacs source code
-       (not (equal form "^p"))
-       (not (equal form "^P"))
-       (not (equal form "^p\np"))
-       (not (equal form "*p\nP"))
-       (not (equal form "P\np"))
-       (not (equal form "p\nP"))
-       (not (equal form "^e"))
-       (not (equal form "e\np"))
-       (not (equal form "*"))
-       ;; from `callint.c'
-       (not (equal form "d"))
-       (not (equal form "U"))
-       (not (equal form "e"))
-       (not (equal form "m"))
-       (not (equal form "i"))
-       (not (equal form "r"))
-       ;; ok, give up and check every character:
-       (progn
-         (let ((inhibit-message t))
-           (message "form - %s" form))
-         t)));;       (not (and (equal form "N")
+    ((or (eq char ?*)
+         (eq char ?^)
+         (eq char ?@))
+     t)
+
+    ((or (eq char ?p)
+         (eq char ?P)
+         (eq char ?d)
+         (eq char ?U)
+         (eq char ?e)
+         (eq char ?m)
+         (eq char ?i)
+         (eq char ?r))
+     ;;TODO N
+     (setq next-newline t))
+
+    (t
+     (cl-return t)))
+   finally return nil))
 
 ;; `call-interactively' is never called from C code. It is called from
 ;; `command-execute', defined in `simple.el', which IS called from C code, from

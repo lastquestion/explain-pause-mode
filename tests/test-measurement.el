@@ -23,7 +23,7 @@
 ;; Free Software Foundation, Inc., 59 Temple Place - Suite 330,
 ;; Boston, MA 02111-1307, USA.
 
-;;; Test timer wrapper code.
+;;; Test measurement engine
 
 (describe
  "explain-pause--generate-timer-parent"
@@ -122,3 +122,46 @@
            :parent explain-pause-root-command-loop
            :depth 1
            :native t))))))
+
+(describe
+ "explain-pause--interactive-form-needs-frame-p"
+
+ (it
+  "skips special chars"
+
+  (expect (explain-pause--interactive-form-needs-frame-p "*p")
+          :to-be
+          nil)
+
+  (expect (explain-pause--interactive-form-needs-frame-p "^P")
+          :to-be
+          nil)
+
+  (expect (explain-pause--interactive-form-needs-frame-p "@e")
+          :to-be
+          nil)
+
+  (expect (explain-pause--interactive-form-needs-frame-p "*^@P")
+          :to-be
+          nil))
+
+ (it
+  "skips until the new line"
+
+  (expect (explain-pause--interactive-form-needs-frame-p "PnN\niM")
+          :to-be
+          nil))
+
+ (it
+  "works with no prompt"
+
+  (expect (explain-pause--interactive-form-needs-frame-p "P\np")
+          :to-be
+          nil))
+
+ (it
+  "returns t for various interactive cases"
+
+  (expect (explain-pause--interactive-form-needs-frame-p "Mprompt: ")
+          :to-be
+          t)))
