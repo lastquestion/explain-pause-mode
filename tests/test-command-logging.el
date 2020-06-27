@@ -35,6 +35,8 @@
              "foo"))
 
  (it "works for evil symbols"
+     ;; issue #15
+     ;; %s is expected to remain, the printer needs to handle it
      (expect (explain-pause--command-as-string
               'foo-%s)
              :to-equal
@@ -50,19 +52,25 @@
      (expect (explain-pause--command-as-string
               ;; note that we are in a lexcial binding file.
               ;; check manual-test-command-logging for closure.
-              (lambda (arglist is long)))
+              (lambda (arglist this-is %s-crazy)))
               :to-equal
+              "<closure> (arg-list: (arglist this-is %s-crazy))"))
+
+ (it "prints closures with evil argument lists"
+     ;; issue #15
+     ;; see above
+     (expect (explain-pause--command-as-string
+              ;; note that we are in a lexical binding file.
+              ;; check manual-test-command-logging for closure.
+              (lambda (arglist is long)))
+             :to-equal
               "<closure> (arg-list: (arglist is long))"))
 
  (it "prints bytecode for bytecode lambdas"
      (expect (explain-pause--command-as-string
               (byte-compile (lambda ()
                               (with-no-warnings
-                                ;; ignore the fact we have %s in the format
-                                ;; specifier without args. test here that
-                                ;; %s and \n is not in the message. Relates
-                                ;; to issue #15.
-                                (message "astring \n %s %%s")))))
+                                (message "astring")))))
              :to-equal
              "<bytecode> (references: (message))"))
 

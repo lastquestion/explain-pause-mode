@@ -2,8 +2,20 @@
 
 EMACS=emacs
 
-.PHONY: test
+# the test case that need full emacs driver
+case-driver=tests/cases/driver.el
+cases:=$(filter-out $(case-driver), $(wildcard tests/cases/*.el))
 
-test:
+# all the test cases don't generate output so they need to be PHONY
+.PHONY: test case-tests $(cases)
+
+case-tests: $(cases)
+
+$(cases): %.el:
+	emacs --batch -f toggle-debug-on-error -l $(case-driver) -l $@ -f "run-test"
+
+unit-tests:
 	$(EMACS) -batch -f package-initialize -l explain-pause-mode.el -f buttercup-run-discover tests
 	$(EMACS) -batch -l explain-pause-mode.el -l tests/manual-test-command-logging.el
+
+tests: unit-tests case-tests

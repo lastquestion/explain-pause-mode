@@ -2281,12 +2281,22 @@ If you change this value, the filename you specify must be writable by Emacs."
   (when explain-pause-log--send-process
     (process-send-string
      explain-pause-log--send-process
-     (format "('enter %s %s %s %s %d)\n"
-             (current-time)
-             (explain-pause-command-record-command entry)
-             (explain-pause-command-record-command record)
-             (explain-pause-command-record-command
-              (explain-pause-command-record-parent record))
+     ;; try to be fast: use format directly, don't bother making an object
+     ;; and call prin1-to-string, because though that is C code, we have
+     ;; to allocate an list. try not to allocate memory instead.
+     (format "(\"enter\" \"%s\" \"%s\" \"%s\" %s %s %s %s %s %d)\n"
+             (explain-pause--command-as-string
+              (explain-pause-command-record-command record))
+             (explain-pause--command-as-string
+              (explain-pause-command-record-command entry))
+             (explain-pause--command-as-string
+              (explain-pause-command-record-command
+               (explain-pause-command-record-parent record)))
+             (explain-pause-command-record-native record)
+             (explain-pause-command-record-executing-time record)
+             (explain-pause-command-record-too-slow record)
+             (explain-pause-command-record-is-profiled record)
+             (explain-pause-command-record-under-profile record)
              (explain-pause-command-record-depth record)))))
 
 (defsubst explain-pause-log--send-profile-start (record)
@@ -2294,9 +2304,9 @@ If you change this value, the filename you specify must be writable by Emacs."
   (when explain-pause-log--send-process
     (process-send-string
      explain-pause-log--send-process
-     (format "('profile-start %s %s %s)\n"
-             (current-time)
-             (explain-pause-command-record-command record)
+     (format "(\"profile-start\" \"%s\" %s)\n"
+             (explain-pause--command-as-string
+              (explain-pause-command-record-command record))
              ;; TODO - abstraction layer?
              (gethash (explain-pause-command-record-command record)
                       explain-pause-profile--profile-statistics)))))
@@ -2306,9 +2316,9 @@ If you change this value, the filename you specify must be writable by Emacs."
   (when explain-pause-log--send-process
     (process-send-string
      explain-pause-log--send-process
-     (format "('profile-end %s %s %s)\n"
-             (current-time)
-             (explain-pause-command-record-command record)
+     (format "(\"profile-end\" \"%s\" %s)\n"
+             (explain-pause--command-as-string
+              (explain-pause-command-record-command record))
              (not (eq (explain-pause-command-record-profile record) nil))))))
 
 (defsubst explain-pause-log--send-command-exit (record)
@@ -2316,18 +2326,15 @@ If you change this value, the filename you specify must be writable by Emacs."
   (when explain-pause-log--send-process
     (process-send-string
      explain-pause-log--send-process
-     (format "('exit %s %s %s %s)\n"
-             (current-time)
-             (explain-pause-command-record-command record)
-             (explain-pause-command-record-command
-              (explain-pause-command-record-parent record))
-             (explain-pause-command-record-executing-time record)))))
-
-(defun explain-pause-log--send-measured-command (record)
-  (when explain-pause-log--send-process
-    ;;    (process-send-string
-    ;; TODO
-  t))
+     (format "(\"exit\" \"%s\" \"%s\" %s %s)\n"
+             (explain-pause--command-as-string
+              (explain-pause-command-record-command record))
+             (explain-pause--command-as-string
+              (explain-pause-command-record-command
+               (explain-pause-command-record-parent record)))
+             (explain-pause-command-record-executing-time record)
+             (when (explain-pause-command-record-profile record)
+               'profile)))))
 
 ;; advices for all the things
 (defun explain-pause-report-measuring-bug (current-command test-command)
@@ -3118,15 +3125,11 @@ Returns the process that is connected to the socket."
          :family 'local
          :service file-socket
          :type 'datagram))
-  (add-hook 'explain-pause-measured-command-hook
-            #'explain-pause-log--send-measured-command)
   explain-pause-log--send-process)
 
 (defun explain-pause-log-off ()
   "Turn off logging of the event stream."
   (interactive)
-  (remove-hook 'explain-pause-measured-command-hook
-               #'explain-pause-log--send-measured-command)
   (when explain-pause-log--send-process
     (let ((save-process explain-pause-log--send-process))
       (setq explain-pause-log--send-process nil)
