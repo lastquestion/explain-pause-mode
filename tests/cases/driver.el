@@ -32,26 +32,33 @@
 ;; test driver code:
 (setq event-stream nil)
 
+(setq stream-logs (getenv "STREAMLOGS"))
+(setq wait-keys (getenv "WAITKEYS"))
+
 (defun log-socket-filter (process string)
   "Accept socket log input from the tested emacs and save it to
 the stream buffer, and also parse it into the event-stream (which
 is in reverse order.) When `exit-test-quit-emacs' is found, set
 exit-command in the session."
-  (with-current-buffer (process-get process :socket-buffer)
-    (insert string))
+  ;; unless we already quit...
+  (unless (nth 5 (process-get process :session))
+    (with-current-buffer (process-get process :socket-buffer)
+      (insert string))
 
-  ;;TODO (message string)
+    (when stream-logs
+      (princ string))
 
-  (let* ((event (read string))
-         (command (nth 1 event)))
+    (let* ((event (read string))
+           (command (nth 1 event)))
 
-    (push event event-stream)
+      (push event event-stream)
 
-    (when (or
-           (equal "exit-test-quit-emacs" command)
-           (equal "exit-test-debugger-invoked" command))
-      (message "... emacs terminated: %s" command)
-      (setf (nth 5 (process-get process :session)) command))))
+      (when (or
+             (equal "exit-test-quit-emacs" command)
+             (equal "exit-test-debugger-invoked" command)
+             (equal "exit-test-unclean" command))
+        (message "... emacs terminated: %s" command)
+        (setf (nth 5 (process-get process :session)) command)))))
 
 ;; utility functions for walking the event stream, which is assumed
 ;; to be in correct order (reversed from event-stream global)
@@ -117,9 +124,11 @@ COMMAND."
 value `passed' to 1 if it fails. `passed' is expected to be used
 as the args to `kill-emacs' by the tester. THIS DOES NOT STOP
 EXECUTION by throwing (compare to `cl-assert', etc.)"
-  ;; TODO would be nice to have color.
   `(let ((passing ,test-form))
-     (message "%s %s"
+     (message "\e[%sm%s %s\e[0m"
+              (if passing
+                  32
+                31)
               ,msg
               (if passing
                   "✓"
@@ -134,18 +143,31 @@ EXECUTION by throwing (compare to `cl-assert', etc.)"
   "Return the measured-time from the exit record."
   (nth 3 record))
 
-(defun start-test (&optional filename)
-  "Start emacs, loading explain-pause and FILENAME, and run
-`before-test' inside that emacs from that file. If FILENAME is
-nil, use the file that defined the function
-`before-test'. Returns the name of the session to be used by
-later commands. Assumes this emacs is running at root of the
-project."
+(defun start-test (&optional filename emacs-args boot-function)
+  "Start emacs to test.
+
+Unless filename is given, use the file that defines `before-test'.
+Unless emacs-args is given, defaults to loading explain-pause via
+`-l`.
+Unless boot-function is given, calls `setup-test-boot' inside
+that emacs via `-f`.
+Unless boot-function is given, after startup finishes,
+`eval-expr' runs `before-test'.
+
+Returns the session to be used by later commands. Assumes this
+emacs is running at root of the project."
 
   (unless filename
     (setq filename (symbol-file 'before-test)))
 
-  (message "Starting subemacs for test %s" filename)
+  (unless emacs-args
+    (setq emacs-args '("-nw" "-Q" ;; no window, no init
+                      "-l"
+                      ;; TODO maybe make this calculate the paths..?
+                      "./explain-pause-mode.el"
+                      "-l"
+                      "./tests/cases/driver.el"
+                      )))
 
   (let* ((name (file-name-base filename))
          (socket-filename (concat (file-name-directory filename)
@@ -161,7 +183,13 @@ project."
            socket-buffer
            nil ;; socket process
            nil ;; dead or not
-           )))
+           ))
+         (boot-args (or boot-function
+                        '("-f" "setup-test-boot"))))
+
+    (setenv "SOCKET" socket-filename)
+
+    (message "Starting subemacs for test %s" filename)
 
     ;; in case the previous tests crashed early
     (ignore-errors (delete-file socket-filename))
@@ -179,22 +207,17 @@ project."
                       ,socket-buffer
                       :session
                       ,session)))
-           (exit-code
-            (call-process "tmux" nil name nil "new-session" "-d"
-                          "-n" name
-                          "-P" "-F" "\"#{pane_pid}\""
-                          "emacs" "-nw" "-Q"
-                          "-l"
-                          ;; TODO maybe make this calculate the paths..?
-                          "./explain-pause-mode.el"
-                          "-l"
-                          "./tests/cases/driver.el"
-                          "-l"
-                          filename
-                          "--eval"
-                          (format "(setq socket-filename \"%s\")" socket-filename)
-                          "-f"
-                          "setup-test")))
+           (args `("tmux" nil ,name nil "new-session" "-d"
+                   "-n" ,name ;; name the session
+                   "-P" "-F" "\"#{pane_pid}\"" ;; get us the pid for later
+                   "emacs"
+                   ,@emacs-args
+                   "-l"
+                   ,filename
+                   ,@boot-args))
+           (exit-code nil))
+
+      (setq exit-code (apply 'call-process args))
 
       (with-current-buffer name
         (cond
@@ -207,7 +230,8 @@ project."
             (setf (nth 1 session) (string-to-number pid-string))
             (setf (nth 4 session) socket-process)
             ;; run setup
-            (eval-expr session "(before-test)")
+            (unless boot-function
+              (eval-expr session "(before-test)"))
             session))
          (t
           ;; no good
@@ -218,17 +242,31 @@ project."
 
 (defun wait-until-dead (session)
   "Wait until the session is dead."
-  (while (not (nth 5 session))
-    (accept-process-output (nth 4 session)))
-  ;; child died
-  (message "... test finished")
-  (delete-process (nth 4 session))
-  (ignore-errors (delete-file (nth 2 session)))
-  (if (equal (nth 5 session) "exit-test-debugger-invoked")
-      (progn
-        (message "test failed in debugger ✗")
-        (kill-emacs 1))
-    (finish-test session)))
+  (let ((proc (nth 4 session)))
+    (while (not (nth 5 session))
+      (accept-process-output proc))
+    ;; child died
+    (message "... test finished")
+    ;; sometimes there is left over input.
+    ;; this only work on *nix
+    (let ((living t))
+      (while living
+        (if (eq
+             (call-process "ps" nil nil nil "-p"
+                           (number-to-string (nth 1 session)))
+             1)
+            ;; dead
+            (setq living nil)
+          ;; alive
+          (sleep-for 0.1))))
+
+    (delete-process proc)
+    (ignore-errors (delete-file (nth 2 session)))
+    (if (equal (nth 5 session) "exit-test-debugger-invoked")
+        (progn
+          (message "\e[31mtest failed in debugger ✗\e[0m")
+          (kill-emacs 1))
+      (finish-test session))))
 
 (defun session-socket-buffer (session)
   "Get the name of the socket buffer in SESSION."
@@ -236,6 +274,9 @@ project."
 
 (defun send-key (session &rest KEYS)
   "Send KEYS to tmux session created by `start-test'"
+  (if wait-keys
+      (read-from-minibuffer (format "send %s..." KEYS))
+    (send-string-to-terminal "."))
   (apply 'call-process "tmux" nil nil nil "send-keys" "-t" (car session) KEYS))
 
 (defun m-x-run (session command)
@@ -249,7 +290,10 @@ project."
 (defun call-after-test (session)
   "Call after-test inside the emacs in SESSION by sending SIGUSR1, which
 it is assumed `test-setup' has trapped."
-  (signal-process (nth 1 session) 'sigusr1))
+  (unless (getenv "PAUSEATTACH")
+    (when (getenv "VERBOSE")
+      (message "sending sigusr1 to %s" (nth 1 session)))
+    (signal-process (nth 1 session) 'sigusr1)))
 
 ;; inside tested code functions
 (defun send-value (name val)
@@ -260,23 +304,37 @@ it is assumed `test-setup' has trapped."
            name
            (prin1-to-string val))))
 
+(defun send-exit-record (why)
+  "Send an emergency exit record (needed if explain-pause didn't install)."
+  (process-send-string
+   explain-pause-log--send-process
+   (format "(\"enter\" \"%s\")\n" why)))
+
 (defun exit-test-quit-emacs ()
   (interactive)
   "Call after-test, and then close and quit emacs. Run by SIGUSR1."
   ;; assumed defined in test file
   (after-test)
+  (send-exit-record "exit-test-unclean")
   (explain-pause-log-off)
-  (kill-emacs))
+  (unless (getenv "NODIE")
+    (kill-emacs)))
 
 (defun exit-test-debugger-invoked ()
   (interactive)
+  (send-exit-record "exit-test-unclean")
   (explain-pause-log-off)
-  (kill-emacs))
+  (unless (getenv "NODIE")
+    (kill-emacs)))
+
+(defun setup-test-boot ()
+  "Setup-test and then start the mode."
+  (setup-test)
+  (explain-pause-mode))
 
 (defun setup-test ()
   "Trap SIGUSR1 so we can call `after-test' inside this
-emacs. Start explain-pause and connect to the logging socket. This must be
-called as the last thing in `before-test'. If the debugger starts, log
+emacs. Connect to the logging socket. If the debugger starts, log
 into the event stream and then quit."
   (add-hook 'debugger-mode-hook
             (lambda ()
@@ -284,5 +342,5 @@ into the event stream and then quit."
   (toggle-debug-on-error)
 
   (define-key special-event-map [sigusr1] 'exit-test-quit-emacs)
-  (explain-pause-log-to-socket socket-filename)
-  (explain-pause-mode))
+
+  (explain-pause-log-to-socket (getenv "SOCKET")))

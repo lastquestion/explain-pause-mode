@@ -2337,17 +2337,23 @@ If you change this value, the filename you specify must be writable by Emacs."
                'profile)))))
 
 ;; advices for all the things
-(defun explain-pause-report-measuring-bug (current-command test-command)
+(defun explain-pause-report-measuring-bug (where current-command test-command)
   "Ask the user to report a bug when the frames do not match"
   ;; turn off everything we can
   (profiler-cpu-stop)
   (explain-pause-mode -1)
 
-  (let ((inhibit-message t))
-    (message "frames do not match\ncurrent:\n%s\ntest:\n %s"
-             current-command
-             test-command))
-  (debug)) ;; TODO, yes yes
+  (with-output-to-temp-buffer
+      "explain-pause-mode-report-bug"
+    (princ "Explain-pause-mode: please report this bug by creating a Github
+issue at https://github.com/lastquestion/explain-pause-mode. Explain-pause-mode
+is now _disabled_ so you can continue to hopefully use Emacs. Info follows:\n\n\n")
+    (princ (format "frames do not match in '%s'\ncurrent:\n%s\ntest:\n%s\n\n\n"
+                   where
+                   current-command
+                   test-command))
+    (princ "Backtrace:\n")
+    (backtrace)))
 
 (defvar explain-pause--current-command-record nil
   "The current command records representing what we are currently
@@ -2410,19 +2416,18 @@ frame as native."
    :depth
    (1+ (explain-pause-command-record-depth parent))))
 
-(defsubst explain-pause--check-not-top-level ()
+(defmacro explain-pause--check-not-top-level (where &rest body)
   "Check that the `explain-pause--current-command-record' is not top level aka
 `explain-pause-root-command-loop' and if it is, ask the user to report an error,
-returning `nil' if so."
-  (if (eq explain-pause--current-command-record explain-pause-root-command-loop)
-      (progn
-        (explain-pause-report-measuring-bug
-         explain-pause--current-command-record
-         explain-pause-root-command-loop)
-        nil)
-    t))
+otherwise execute BODY. This is a macro to avoid execution of WHERE unless needed."
+  `(if (eq explain-pause--current-command-record explain-pause-root-command-loop)
+       (explain-pause-report-measuring-bug
+        (format "not top level in %s" ,where)
+        explain-pause--current-command-record
+        explain-pause-root-command-loop)
+     ,@body))
 
-(defmacro explain-pause--set-command-call (record form &rest body)
+(defmacro explain-pause--set-command-call (where record form &rest body)
   "Set `explain-pause--current-command-record' to RECORD and update it's
 entry-snap to `current-time'. Profile if requested, around FORM with unwind
 protect.  After, pause-and-store the RECORD, and verify that
@@ -2446,6 +2451,7 @@ protect.  After, pause-and-store the RECORD, and verify that
          (explain-pause-log--send-command-exit ,record)
          (if (not (eq explain-pause--current-command-record ,record))
              (explain-pause-report-measuring-bug
+              ,where
               explain-pause--current-command-record
               ,record)
            ,@body)))))
@@ -2457,7 +2463,7 @@ protect.  After, pause-and-store the RECORD, and verify that
            explain-pause-slow-too-long-ms))
   (run-hook-with-args 'explain-pause-measured-command-hook new-frame))
 
-(defmacro explain-pause--pause-call-unpause (new-record-form function-form)
+(defmacro explain-pause--pause-call-unpause (where new-record-form function-form)
   "Pause current record; create a new record using NEW-RECORD-FORM;
 `explain-pause--set-command-call' FUNCTION-FORM; run
 `explain-pause-measured-command-hook'; unpause current record. `current-record'
@@ -2467,6 +2473,7 @@ is bound throughout as the current record."
 
      (let ((new-frame ,new-record-form))
        (explain-pause--set-command-call
+        ,where
         new-frame
         ,function-form
 
@@ -2630,6 +2637,7 @@ a native frame."
                             command-frame)))
               ;; uhoh
               (explain-pause-report-measuring-bug
+               "call-interactively extra-frame"
                top-frame
                target-function) ;; hm, TODO polymorphic type..
 
@@ -2649,6 +2657,7 @@ a native frame."
           ;; no extra-frame, top-frame = command-frame
           (if (not (eq top-frame command-frame))
               (explain-pause-report-measuring-bug
+               "call interactively"
                top-frame
                command-frame)
             ;; exit command-frame:
@@ -2695,14 +2704,16 @@ much time the native code in `call-interatively' took."
 (defun explain-pause--wrap-native (original-func &rest args)
   "Advise a native function. Insert a new native command record, so we can track
 any calls back into elisp."
-  (when (explain-pause--check-not-top-level)
-    (explain-pause--pause-call-unpause
-     (explain-pause--command-record-from-parent
-      current-record
-      current-record
-      original-func
-      t)
-     (apply original-func args))))
+  (explain-pause--check-not-top-level
+   (format "wrap-native for %s" original-func)
+   (explain-pause--pause-call-unpause
+    (format "wrap-native for %s" original-func)
+    (explain-pause--command-record-from-parent
+     current-record
+     current-record
+     original-func
+     t)
+    (apply original-func args))))
 
 (defun explain-pause--wrap-completing-read-family (original-func &rest args)
   ;; read-command -> Fcompleting_read
@@ -2721,26 +2732,30 @@ any calls back into elisp."
   ;; `completing-read-function'.
   ;; don't bother creating a native frame for it. Instead create a regular
   ;; frame for the `completing-read-function' _itself_
-  (when (explain-pause--check-not-top-level)
-    (explain-pause--pause-call-unpause
-     (explain-pause--command-record-from-parent
-      current-record
-      current-record
-      completing-read-function)
-     (apply original-func args))))
+  (explain-pause--check-not-top-level
+   (format "completing-read for %s" original-func)
+   (explain-pause--pause-call-unpause
+    (format "completing-read for %s" original-func)
+    (explain-pause--command-record-from-parent
+     current-record
+     current-record
+     completing-read-function)
+    (apply original-func args))))
 
 (defun explain-pause--wrap-read-buffer (original-func &rest args)
   "Wrap read-buffer in particular, as it calls one of two completion functions
 depending on the arguments."
-  (when (explain-pause--check-not-top-level)
-    (explain-pause--pause-call-unpause
-     (explain-pause--command-record-from-parent
-      current-record
-      current-record
-      ;; read-buffer picks based on whether `read-buffer-function' is nil
-      (or read-buffer-function
-          completing-read-function))
-     (apply original-func args))))
+  (explain-pause--check-not-top-level
+   "read-buffer"
+   (explain-pause--pause-call-unpause
+    "read-buffer"
+    (explain-pause--command-record-from-parent
+     current-record
+     current-record
+     ;; read-buffer picks based on whether `read-buffer-function' is nil
+     (or read-buffer-function
+         completing-read-function))
+    (apply original-func args))))
 
 ;; timer or process io hooks code
 (defun explain-pause--wrap-callback
@@ -2756,6 +2771,7 @@ callback with a new command record whose parent is PARENT-COMMAND-RECORD."
     ;; been profiled, but we are now executing in a new context - all wrappers
     ;; are either timers, process, etc.
     (explain-pause--pause-call-unpause
+     (format "wrap callback for %s" original-cb)
      (explain-pause--command-record-from-parent
       current-record
       parent-command-record
@@ -2983,54 +2999,68 @@ callback."
          read-command
          read-function
          read-variable
-         completing-read)))
+         completing-read))
+      (install-attempt 0))
+
+  (defun explain-pause-mode--install-hooks ()
+    "Actually install hooks for `explain-pause-mode'."
+    (advice-add 'call-interactively :around
+                #'explain-pause--wrap-call-interactively)
+    (advice-add 'funcall-interactively :before
+                #'explain-pause--before-funcall-interactively)
+
+    ;; OK, we're prepared to advise native functions and timers:
+    (dolist (native-func native)
+      (advice-add native-func :around
+                  #'explain-pause--wrap-native))
+
+    (dolist (completing-read-func completing-read-family)
+      (advice-add completing-read-func :around
+                  #'explain-pause--wrap-completing-read-family))
+
+    (advice-add 'read-buffer :around #'explain-pause--wrap-read-buffer)
+
+    (dolist (process-func make-process-family)
+      (advice-add process-func :around
+                  #'explain-pause--wrap-make-process))
+
+    (dolist (callback-func callback-family)
+      (advice-add (car callback-func) :filter-args (cdr callback-func)))
+
+    (advice-add 'file-notify-add-watch :filter-args
+                #'explain-pause--wrap-file-notify-add-watch)
+
+    (setq explain-pause--current-command-record
+          explain-pause-root-command-loop)
+
+    (message "Explain-pause-mode enabled."))
 
   (defun explain-pause-mode--enable-hooks ()
-    "Enable hooks for `explain-pause-mode' if it is being run at the top of the
+    "Install hooks for `explain-pause-mode' if it is being run at the top of the
 emacs loop, e.g. not inside `call-interactively' or `sit-for' or any interleaved
-timers, etc."
-    (if nil
-        (message "Unable to install `explain-pause-mode', please report a bug to \
+timers, etc. Otherwise, wait for next invocation."
+    (if (> install-attempt 5)
+        (progn
+          (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
+          (message "Unable to install `explain-pause-mode', please report a bug to \
 github.com/lastquestion/explain-pause-mode")
+          (setq explain-pause-mode nil))
       (let ((top-of-loop t))
         (mapbacktrace (lambda (_evaled func _args _flags)
                         (unless (eq func 'explain-pause-mode--enable-hooks)
                           (setq top-of-loop nil)))
                       #'explain-pause-mode--enable-hooks)
-        (when top-of-loop
-          (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
+        (if (not top-of-loop)
+            (unless (active-minibuffer-window)
+              ;; well, it's definitely not going to work if the user is got
+              ;; a minibuffer open. wait until the minibuffer goes away.
+              (setq install-attempt (1+ install-attempt)))
           ;; ok, we're safe:
-          (advice-add 'call-interactively :around
-                      #'explain-pause--wrap-call-interactively)
-          (advice-add 'funcall-interactively :before
-                      #'explain-pause--before-funcall-interactively)
-
-          ;; OK, we're prepared to advise native functions and timers:
-          (dolist (native-func native)
-            (advice-add native-func :around
-                        #'explain-pause--wrap-native))
-
-          (dolist (completing-read-func completing-read-family)
-            (advice-add completing-read-func :around
-                        #'explain-pause--wrap-completing-read-family))
-
-          (advice-add 'read-buffer :around #'explain-pause--wrap-read-buffer)
-
-          (dolist (process-func make-process-family)
-            (advice-add process-func :around
-                        #'explain-pause--wrap-make-process))
-
-          (dolist (callback-func callback-family)
-            (advice-add (car callback-func) :filter-args (cdr callback-func)))
-
-          (advice-add 'file-notify-add-watch :filter-args
-                      #'explain-pause--wrap-file-notify-add-watch)
-
-          (setq explain-pause--current-command-record
-                explain-pause-root-command-loop)))))
+          (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
+          (explain-pause-mode--install-hooks)))))
 
   (defun explain-pause-mode--disable-hooks ()
-    "Disable hooks installed by `explain-pause-mode--enable-hooks'."
+    "Disable hooks installed by `explain-pause-mode--install-hooks'."
     (advice-remove 'file-notify-add-watch
                    #'explain-pause--wrap-file-notify-add-watch)
 
@@ -3083,9 +3113,26 @@ must install itself after some time while Emacs is not doing anything."
 
   (cond
    (explain-pause-mode
-    ;; since we might be called inside a interactive function, we need to run
-    ;; this outside any command:
-    (add-hook 'post-command-hook #'explain-pause-mode--enable-hooks))
+    (let ((is-in-init-code nil))
+      ;; we need to know if we are being loaded in init.el. if so,
+      ;; we cannot install hooks right away, because read-event is used in
+      ;; `terminal-init-xterm' for some reason... there are comments in
+      ;; emacs code implying this could be fixed but, it's not.
+      ;; check for `top-level':
+      (mapbacktrace (lambda (_evaled func _args _flags)
+                      (when (eq func top-level)
+                        (setq is-in-init-code t))))
+
+      (if is-in-init-code
+          ;; use `emacs-startup-hook' as the earliest point we could hook. this
+          ;; runs after `command-line' which calls
+          ;; `tty-run-terminal-initialization' which is what calls the xterm
+          ;; init.
+          (add-hook 'emacs-startup-hook #'explain-pause-mode--enable-hooks)
+        ;; no, then we better run after the next command, which we hope
+        ;; is top level.
+        (setq install-attempt 0)
+        (add-hook 'post-command-hook #'explain-pause-mode--enable-hooks))))
    (t
     (explain-pause-mode--disable-hooks))))
 
