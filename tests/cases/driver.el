@@ -30,10 +30,13 @@
 ;; in the tested emacs.
 
 ;; test driver code:
+(require 'seq)
+
 (setq event-stream nil)
 
 (setq stream-logs (getenv "STREAMLOGS"))
 (setq wait-keys (getenv "WAITKEYS"))
+(setq verbose (getenv "VERBOSE"))
 
 (defun log-socket-filter (process string)
   "Accept socket log input from the tested emacs and save it to
@@ -53,12 +56,16 @@ exit-command in the session."
 
       (push event event-stream)
 
-      (when (or
+      (cond
+       ((or
              (equal "exit-test-quit-emacs" command)
              (equal "exit-test-debugger-invoked" command)
              (equal "exit-test-unclean" command))
         (message "... emacs terminated: %s" command)
-        (setf (nth 5 (process-get process :session)) command)))))
+        (setf (nth 5 (process-get process :session)) command))
+       ((equal "enabled" (nth 0 event))
+        (message "...mode enabled")
+        (setf (nth 6 (process-get process :session)) t))))))
 
 ;; utility functions for walking the event stream, which is assumed
 ;; to be in correct order (reversed from event-stream global)
@@ -66,14 +73,17 @@ exit-command in the session."
   "Find the ptr to the first passing pred."
   (find-ptr-between (cons list nil) pred))
 
+(defun span-between (span pred-start pred-end)
+  "Find the span inside the span with PRED-START and PRED-END."
+  (let* ((start (find-ptr-between span pred-start))
+         (end (find-ptr-between (cons (cdr start) (cdr span)) pred-end)))
+    (cons start end)))
+
 (defun span (head pred-start pred-end)
   "Find the span with the first passing PRED-START and first
 passing PRED-END after that found PRED-START in ( start . end ),
 inclusively."
-  (let* ((start (find-ptr head pred-start))
-         (end (find-ptr start pred-end)))
-
-    (cons start end)))
+  (span-between (cons head nil) pred-start pred-end))
 
 (defun find-ptr-between (span pred)
   "Find the ptr to pred between the span, inclusively."
@@ -103,6 +113,13 @@ in span."
   "Find the first span that matches an enter/exit pair for
 COMMAND."
   (span head
+        (find-by "enter" command)
+        (find-by "exit" command)))
+
+(defun span-func-between (span command)
+  "Find the first span inside span that matches an enter/exit
+pair for COMMAND."
+  (span-between span
         (find-by "enter" command)
         (find-by "exit" command)))
 
@@ -183,6 +200,7 @@ emacs is running at root of the project."
            socket-buffer
            nil ;; socket process
            nil ;; dead or not
+           nil ;; started or not
            ))
          (boot-args (or boot-function
                         '("-f" "setup-test-boot"))))
@@ -240,28 +258,56 @@ emacs is running at root of the project."
           (ignore-errors (delete-file socket-filename))
           (kill-emacs 1)))))))
 
+(let ((spin 0)
+      (values ["\e[D-"
+               "\e[D/"
+               "\e[D|"
+               "\e[D\\"]))
+
+  (defun spinner ()
+    (send-string-to-terminal (aref values spin))
+    (setq spin (% (1+ spin) 4))))
+
+(defun wait-until-ready (session)
+  "Wait until the mode is enabled."
+  (message "Waiting until ready...")
+  (let ((proc (nth 4 session)))
+    (while (not (nth 6 session))
+      (spinner)
+      (accept-process-output)))
+  (message "...ready"))
+
 (defun wait-until-dead (session)
   "Wait until the session is dead."
   (let ((proc (nth 4 session)))
+    (message "Waiting until dead...")
     (while (not (nth 5 session))
-      (accept-process-output proc))
+      (spinner)
+      (accept-process-output))
     ;; child died
-    (message "... test finished")
+    (message "... finished.\nwaiting for PID to die:")
     ;; sometimes there is left over input.
     ;; this only work on *nix
-    (let ((living t))
-      (while living
-        (if (eq
-             (call-process "ps" nil nil nil "-p"
-                           (number-to-string (nth 1 session)))
-             1)
-            ;; dead
-            (setq living nil)
-          ;; alive
-          (sleep-for 0.1))))
+    (if (getenv "NODIE")
+        (read-from-minibuffer "Quit?")
+      (let ((living t))
+        (while living
+          (if (eq
+               (call-process "ps" nil nil nil "-p"
+                             (number-to-string (nth 1 session)))
+               1)
+              ;; dead
+              (setq living nil)
+            ;; alive
+            (spinner)
+            (sleep-for 0.1)))))
 
+    (message "done\n")
+    ;; delete the network process
     (delete-process proc)
+    ;; delete the socket files
     (ignore-errors (delete-file (nth 2 session)))
+
     (if (equal (nth 5 session) "exit-test-debugger-invoked")
         (progn
           (message "\e[31mtest failed in debugger ✗\e[0m")
@@ -272,42 +318,88 @@ emacs is running at root of the project."
   "Get the name of the socket buffer in SESSION."
   (nth 3 session))
 
+(defun convert-to-hex (keys)
+  (seq-reduce
+   (lambda (accum key)
+     (cond
+      ((eq key 'enter)
+       (append accum (list "0D")))
+      ((eq key 'escape)
+       (append accum (list "1B")))
+      (t
+       (append accum
+               (mapcar (lambda (char)
+                         (format "%x" char))
+                       key)))))
+   keys '()))
+
+(defun convert-to-str (keys)
+  (mapconcat (lambda (key)
+               (cond
+                ((eq key 'enter)
+                 "<ENTER>")
+                ((eq key 'escape)
+                 "<ESC>")
+                (t
+                 key)))
+             keys ""))
+
 (defun send-key (session &rest KEYS)
   "Send KEYS to tmux session created by `start-test'"
   (if wait-keys
       (read-from-minibuffer (format "send %s..." KEYS))
-    (send-string-to-terminal "."))
-  (apply 'call-process "tmux" nil nil nil "send-keys" "-t" (car session) KEYS))
+    (if verbose
+        (message "%s %s"
+                 (convert-to-str KEYS)
+                 (convert-to-hex KEYS))
+      (send-string-to-terminal ".")))
+  (let ((proc (make-process
+               :name "tmux"
+               :buffer nil
+               :command `("tmux" "send-keys" "-H" "-t"
+                          ,(car session)
+                          ,@(convert-to-hex KEYS))
+               :connection 'pipe)))
+    (while (process-live-p proc)
+      (when verbose
+        (spinner))
+      (accept-process-output))))
+
+(defun m-key-string (session key command)
+  (send-key session 'escape key)
+  (let ((keys (seq-partition command 5)))
+    (seq-doseq (key keys)
+      (send-key session key)))
+  (send-key session 'enter))
 
 (defun m-x-run (session command)
   "M-x run a command and press enter."
-  (send-key session "Escape" (concat "x" command) "Enter"))
+  (m-key-string session "x" command))
 
 (defun eval-expr (session expr)
   "M-: eval-expression expr and press enter."
-  (send-key session "Escape" (concat ":" expr) "Enter"))
+  (m-key-string session ":" expr))
 
 (defun call-after-test (session)
   "Call after-test inside the emacs in SESSION by sending SIGUSR1, which
 it is assumed `test-setup' has trapped."
-  (unless (getenv "PAUSEATTACH")
-    (when (getenv "VERBOSE")
+  (if (getenv "PAUSEATTACH")
+      (message "Pausing to allow attach...")
+    (when verbose
       (message "sending sigusr1 to %s" (nth 1 session)))
     (signal-process (nth 1 session) 'sigusr1)))
 
 ;; inside tested code functions
 (defun send-value (name val)
   "Send the name/value pair to the event log. Run only inside tested code."
-  (process-send-string
-   explain-pause-log--send-process
+  (explain-pause-log--send-dgram
    (format "(\"value\" \"%s\" %s)\n"
            name
            (prin1-to-string val))))
 
 (defun send-exit-record (why)
   "Send an emergency exit record (needed if explain-pause didn't install)."
-  (process-send-string
-   explain-pause-log--send-process
+  (explain-pause-log--send-dgram
    (format "(\"enter\" \"%s\")\n" why)))
 
 (defun exit-test-quit-emacs ()

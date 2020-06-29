@@ -23,59 +23,65 @@
 ;; Free Software Foundation, Inc., 59 Temple Place - Suite 330,
 ;; Boston, MA 02111-1307, USA.
 
-;;; test case for #6 and #7
-;; sit-for did not keep the return value
-;; check also the duration is not counted
+;;; Regression test for part of #26.
+;;; test that when a timer interrupts a minibuffer with y-or-n-p,
+;;; time is subtracted from each other.
 
-;; under test emacs code
 (defun before-test ()
   t)
 
+(defun start-interrupt-timer ()
+  (run-with-timer 1 nil 'timer))
+
+(defun timer ()
+  (sleep-for 0.1)
+  (unless (y-or-n-p "question")
+    (start-interrupt-timer)))
+
+(defun reader ()
+  (interactive)
+  (read-from-minibuffer "Some input:")
+  (sleep-for 0.5))
+
 (defun after-test ()
   t)
-
-(defun test-sit-for ()
-  (interactive)
-  (send-value "waited" (sit-for 2)))
 
 ;; driver code
 (defun run-test ()
   (let ((session (start-test)))
     (wait-until-ready session)
-    (m-x-run session "test-sit-for")
-    (sleep-for 3)
-    (m-x-run session "test-sit-for")
-    (sleep-for 0.2)
-    (send-key session "t")
+    (eval-expr session "(start-interrupt-timer)")
+    (sleep-for 0.1)
+    (m-x-run session "reader")
+    (sleep-for 1.5)
+    ;; the yes or no should be open
+    (send-key session "n")
+    (sleep-for 2)
+    (send-key session "y")
+    ;; now type for the buffer
+    (sleep-for 0.5)
+    (send-key session "f!" 'enter)
+    (sleep-for 0.5)
     (call-after-test session)
     (wait-until-dead session)))
 
 (defun finish-test (session)
   (let* ((stream (reverse event-stream))
-         ;; the first result:
-         (first-call
-          (span-func stream "test-sit-for"))
-
-         ;; the second result
-         (second-call
-          (span-func (cdr first-call) "test-sit-for"))
-
+         (reader (span-func stream "reader"))
+         (timer-1 (span-func-between reader "timer"))
+         (timer-2 (span-func-between (cons (cddr timer-1) (cdr reader)) "timer"))
          (passed 0))
 
     (message-assert
-     (< (exit-measured-time (cadr first-call)) 10)
-     "sit-for full-time did not subtract")
+     (< (exit-measured-time (cadr reader)) 510)
+     "Minibuffer time subtracted timers and read")
 
     (message-assert
-     (eq (get-value-between first-call "waited") t)
-     "sit for full-time did not return t")
+     (< (exit-measured-time (cadr timer-1)) 120)
+     "timer time subtracted out y-or-n-p time")
 
     (message-assert
-     (< (exit-measured-time (cadr second-call)) 10)
-     "sit-for part-time did not subtract")
-
-    (message-assert
-     (eq (get-value-between second-call "waited") nil)
-     "sit-for part time did not return nil")
+     (< (exit-measured-time (cadr timer-2)) 120)
+     "timer time subtracted out y-or-n-p time")
 
     (kill-emacs passed)))

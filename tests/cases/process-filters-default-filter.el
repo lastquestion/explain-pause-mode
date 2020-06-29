@@ -30,12 +30,12 @@
   (setq proc (make-process
               :name "test"
               :buffer "test"
-              :command '("bash")))
+              :command '("cat")))
 
   (set-process-filter proc nil))
 
 (defun cause-input ()
-  (process-send-string proc "ls -al\n"))
+  (process-send-string proc "HI\n"))
 
 (defun after-test ()
   (delete-process proc))
@@ -43,13 +43,15 @@
 ;; driver code
 (defun run-test ()
   (let ((session (start-test)))
-    ;; TODO do we need this?
-    (sleep-for 0.5)
+    (wait-until-ready session)
     (eval-expr session "(cause-input)")
-    (sleep-for 0.25)
+    (sleep-for 1)
     (call-after-test session)
     (wait-until-dead session)))
 
 (defun finish-test (session)
-  ;; if we didn't die in debugger, we succeeded
-  (kill-emacs 0))
+  (let ((passed 0))
+    (message-assert
+     (equal (nth 5 session) "exit-test-quit-emacs")
+     "mode installed correctly")
+    (kill-emacs passed)))

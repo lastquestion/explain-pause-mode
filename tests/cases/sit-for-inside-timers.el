@@ -47,8 +47,7 @@
 ;; driver code
 (defun run-test ()
   (let ((session (start-test)))
-    ;; TODO do we need this?
-    (sleep-for 0.5)
+    (wait-until-ready session)
     (eval-expr session "(run-timer-non-interactively)")
     (sleep-for 1.5)
     (m-x-run session "run-timer-interactively")

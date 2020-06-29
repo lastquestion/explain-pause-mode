@@ -41,8 +41,7 @@
 ;; driver code
 (defun run-test ()
   (let ((session (start-test)))
-    ;; TODO do we need this?
-    (sleep-for 0.5)
+    (wait-until-ready session)
     (m-x-run session "test-read-key-sequence")
     (sleep-for 1)
     (send-key session "p")
@@ -57,10 +56,10 @@
 
     (message-assert
      (< (exit-measured-time (cadr call)) 10)
-     "read-key-sequence time did not subtract")
+     "read-key-sequence time subtracted")
 
     (message-assert
      (equal (get-value-between call "key") "p")
-     "read-key-sequence did not return read key")
+     "read-key-sequence returned actual key")
 
     (kill-emacs passed)))

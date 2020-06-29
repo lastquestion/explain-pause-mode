@@ -23,59 +23,42 @@
 ;; Free Software Foundation, Inc., 59 Temple Place - Suite 330,
 ;; Boston, MA 02111-1307, USA.
 
-;;; test case for #6 and #7
-;; sit-for did not keep the return value
-;; check also the duration is not counted
+;;; Regression test case for part of #26.
+;;; Test that sit-for is accounted correctly inside a process filter.
 
-;; under test emacs code
 (defun before-test ()
-  t)
+  (setq proc (make-process
+              :name "test"
+              :buffer "test"
+              :command '("cat")
+              :filter 'filter-func)))
+
+(defun filter-func (process string)
+  (sit-for 1)
+  (sleep-for 0.1))
+
+(defun cause-input ()
+  (process-send-string proc "HI\n"))
 
 (defun after-test ()
-  t)
-
-(defun test-sit-for ()
-  (interactive)
-  (send-value "waited" (sit-for 2)))
+  (delete-process proc))
 
 ;; driver code
 (defun run-test ()
   (let ((session (start-test)))
     (wait-until-ready session)
-    (m-x-run session "test-sit-for")
-    (sleep-for 3)
-    (m-x-run session "test-sit-for")
-    (sleep-for 0.2)
-    (send-key session "t")
+    (eval-expr session "(cause-input)")
+    (sleep-for 1.5)
     (call-after-test session)
     (wait-until-dead session)))
 
 (defun finish-test (session)
   (let* ((stream (reverse event-stream))
-         ;; the first result:
-         (first-call
-          (span-func stream "test-sit-for"))
-
-         ;; the second result
-         (second-call
-          (span-func (cdr first-call) "test-sit-for"))
-
+         (filter (span-func stream "filter-func"))
          (passed 0))
 
     (message-assert
-     (< (exit-measured-time (cadr first-call)) 10)
-     "sit-for full-time did not subtract")
-
-    (message-assert
-     (eq (get-value-between first-call "waited") t)
-     "sit for full-time did not return t")
-
-    (message-assert
-     (< (exit-measured-time (cadr second-call)) 10)
-     "sit-for part-time did not subtract")
-
-    (message-assert
-     (eq (get-value-between second-call "waited") nil)
-     "sit-for part time did not return nil")
+     (< (exit-measured-time (cadr filter)) 110)
+     "filter time subtracted out sit-for time")
 
     (kill-emacs passed)))

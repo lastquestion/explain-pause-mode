@@ -2276,14 +2276,62 @@ If you change this value, the filename you specify must be writable by Emacs."
 (defvar explain-pause-log--send-process nil
   "The process used to send logs to the UNIX socket.")
 
+(defvar explain-pause-log--dgram-buffer-size 256
+  "The dgram buffer size.")
+
+(defvar explain-pause-log--dgram-buffer
+  (make-vector (+ 3 explain-pause-log--dgram-buffer-size) 0)
+  "The vector of temporary dgrams if the receiver is full. The firsw two items
+represent the push and pop indices. Reserve one empty slot to differentiate
+empty and full.")
+
+(defun explain-pause-log--missing-socket-disable ()
+  ;;TODO
+  (debug))
+
+(defsubst explain-pause-log--send-dgram (str)
+  "Write to the socket if it is enabled. The DGRAM code has its own special
+branch in process.c which is synchronous (it doesn't block). If the buffer is
+full on the other side, an error is raised."
+  (condition-case err
+      (progn
+        (while (not (eq (aref explain-pause-log--dgram-buffer 0)
+                        (aref explain-pause-log--dgram-buffer 1)))
+          (process-send-string
+           explain-pause-log--send-process
+           (aref explain-pause-log--dgram-buffer
+                 (+ (aref explain-pause-log--dgram-buffer 0) 2)))
+          (setf (aref explain-pause-log--dgram-buffer 0)
+                (% (1+ (aref explain-pause-log--dgram-buffer 0))
+                   explain-pause-log--dgram-buffer-size)))
+
+        (process-send-string
+         explain-pause-log--send-process
+         str))
+    (file-error
+     (cond
+      ;; the file didn't exist; turn off logging...
+      ((eq (car err) 'file-missing)
+       (explain-pause-log--missing-socket-disable))
+      ;; to avoid doing a grep over the string, assume it's just
+      ;; buffer full. Try to push it onto the dgrams buffer.
+      ((eq (car err) 'file-error)
+       (let ((next (% (1+ (aref explain-pause-log--dgram-buffer 1))
+                      explain-pause-log--dgram-buffer-size)))
+         (if (eq (aref explain-pause-log--dgram-buffer 0) next)
+             (explain-pause-log--missing-socket-disable)
+           (setf (aref explain-pause-log--dgram-buffer
+                       (+ (aref explain-pause-log--dgram-buffer 1) 2))
+                 str)
+           (setf (aref explain-pause-log--dgram-buffer 1) next))))))))
+
 (defsubst explain-pause-log--send-command-entry (entry record)
   "Send the fact that we are entering RECORD from ENTRY to the send pipe."
-  (when explain-pause-log--send-process
-    (process-send-string
-     explain-pause-log--send-process
      ;; try to be fast: use format directly, don't bother making an object
      ;; and call prin1-to-string, because though that is C code, we have
-     ;; to allocate an list. try not to allocate memory instead.
+  ;; to allocate an list. try not to allocate memory instead.
+  (when explain-pause-log--send-process
+    (explain-pause-log--send-dgram
      (format "(\"enter\" \"%s\" \"%s\" \"%s\" %s %s %s %s %s %d)\n"
              (explain-pause--command-as-string
               (explain-pause-command-record-command record))
@@ -2302,8 +2350,7 @@ If you change this value, the filename you specify must be writable by Emacs."
 (defsubst explain-pause-log--send-profile-start (record)
   "Send the fact that we are beginning profiling to the send pipe"
   (when explain-pause-log--send-process
-    (process-send-string
-     explain-pause-log--send-process
+    (explain-pause-log--send-dgram
      (format "(\"profile-start\" \"%s\" %s)\n"
              (explain-pause--command-as-string
               (explain-pause-command-record-command record))
@@ -2314,8 +2361,7 @@ If you change this value, the filename you specify must be writable by Emacs."
 (defsubst explain-pause-log--send-profile-end (record)
   "Send the fact that we are ending profiling to the send pipe"
   (when explain-pause-log--send-process
-    (process-send-string
-     explain-pause-log--send-process
+    (explain-pause-log--send-dgram
      (format "(\"profile-end\" \"%s\" %s)\n"
              (explain-pause--command-as-string
               (explain-pause-command-record-command record))
@@ -2324,8 +2370,7 @@ If you change this value, the filename you specify must be writable by Emacs."
 (defsubst explain-pause-log--send-command-exit (record)
   "Send the fact that we have finished a record to the send pipes"
   (when explain-pause-log--send-process
-    (process-send-string
-     explain-pause-log--send-process
+    (explain-pause-log--send-dgram
      (format "(\"exit\" \"%s\" \"%s\" %s %s)\n"
              (explain-pause--command-as-string
               (explain-pause-command-record-command record))
@@ -3032,6 +3077,10 @@ callback."
 
     (setq explain-pause--current-command-record
           explain-pause-root-command-loop)
+
+    (when explain-pause-log--send-process
+      (explain-pause-log--send-dgram
+       "(\"enabled\")\n"))
 
     (message "Explain-pause-mode enabled."))
 

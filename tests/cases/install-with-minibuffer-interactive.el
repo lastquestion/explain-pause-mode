@@ -55,11 +55,14 @@
   ;; more then 5, which is the give up number
   ;; enter at the end calls post-command-hook for the minibuffer
   ;; which then installs
-  (send-key session "abcdef" "Enter")
+  (send-key session "abcdef" 'enter)
 
   (call-after-test session)
   (wait-until-dead session))
 
 (defun finish-test (session)
-  ;; if we get here, the mode must have installed
-  (kill-emacs 0))
+  (let ((passed 0))
+    (message-assert
+     (equal (nth 5 session) "exit-test-quit-emacs")
+     "mode installed correctly")
+    (kill-emacs passed)))

@@ -67,5 +67,8 @@ if messages buffer has error message."
     (wait-until-dead session)))
 
 (defun finish-test (session)
-  ;; if we got here we didn't die during check-buffers
-  (kill-emacs 0))
+  (let ((passed 0))
+    (message-assert
+     (equal (nth 5 session) "exit-test-quit-emacs")
+     "mode installed correctly")
+    (kill-emacs passed)))
