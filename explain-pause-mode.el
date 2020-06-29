@@ -2873,6 +2873,7 @@ any."
              original-filter)))
 
          (original-sentinel (plist-get args :sentinel))
+
          (wrapped-sentinel
           (when original-sentinel
             (explain-pause--generate-wrapper
@@ -2893,42 +2894,84 @@ any."
       (when process
         ;; store the process frame in a process variable so later we can get at it
         ;; for new filters
-        (process-put process 'explain-pause-process-frame process-frame))
+        (process-put process 'explain-pause-process-frame process-frame)
+
+        ;; store the original filters and sentinels so we can return them out,
+        ;; if not nil
+        (when original-filter
+          (process-put process 'explain-pause-original-filter original-filter))
+        (when original-sentinel
+          (process-put process 'explain-pause-original-sentinel original-sentinel)))
+
       process)))
 
-(defun explain-pause--wrap-set-process-filter-callback (args)
-  "Advise that modifies the arguments ARGS to `process-filter' by wrapping the
-callback."
+(defun explain-pause--wrap-set-process-filter-callback (orig &rest args)
+  "Advise that wraps `set-process-filter' so the callback is wrapped."
+  ;; be careful to set the saved filter value AFTER the call, so if it
+  ;; throws, we avoid changing it.
   (seq-let [arg-process original-callback] args
     (if (not original-callback)
-        args
-      (let ((process-frame (process-get arg-process 'explain-pause-process-frame)))
-        (list arg-process
-              (explain-pause--generate-wrapper
-               ;; the parent of the new record is the original process, NOT
-               ;; the caller
-               (explain-pause--command-record-from-parent
-                process-frame
-                process-frame
-                'process-filter)
-               original-callback))))))
+        (let ((result (apply orig args)))
+          (process-put arg-process 'explain-pause-original-filter nil)
+          result)
+      (let* ((process-frame (process-get arg-process 'explain-pause-process-frame))
+             (result
+              (apply orig
+                     (list arg-process
+                     (explain-pause--generate-wrapper
+                      ;; the parent of the new record is the original process, NOT
+                      ;; the caller
+                      (explain-pause--command-record-from-parent
+                       process-frame
+                       process-frame
+                       'process-filter)
+                      original-callback)))))
+        (process-put arg-process 'explain-pause-original-filter original-callback)
+        result))))
 
-(defun explain-pause--wrap-set-process-sentinel-callback (args)
-  "Advise that modifies the arguments ARGS to `process-sentinel' by wrapping the
-callback."
+(defun explain-pause--wrap-set-process-sentinel-callback (orig &rest args)
+  "Advise that wraps `set-process-sentinel' so the callback is wrapped."
+  ;; be careful to set the saved sentinel value AFTER the call, so if it
+  ;; throws, we avoid changing it.
   (seq-let [arg-process original-callback] args
     (if (not original-callback)
-        args
-      (let ((process-frame (process-get arg-process 'explain-pause-process-frame)))
-        (list arg-process
-              (explain-pause--generate-wrapper
-               ;; the parent of the new record is the original process, NOT
-               ;; the caller
-               (explain-pause--command-record-from-parent
-                process-frame
-                process-frame
-                'process-sentinel)
-               original-callback))))))
+        (let ((result (apply orig args)))
+          (process-put arg-process 'explain-pause-original-sentinel nil)
+          result)
+      (let* ((process-frame (process-get arg-process 'explain-pause-process-frame))
+             (result
+              (apply orig
+                     (list arg-process
+                     (explain-pause--generate-wrapper
+                      ;; the parent of the new record is the original process, NOT
+                      ;; the caller
+                      (explain-pause--command-record-from-parent
+                       process-frame
+                       process-frame
+                       'process-sentinel)
+                      original-callback)))))
+        (process-put arg-process 'explain-pause-original-sentinel original-callback)
+        result))))
+
+(defun explain-pause--wrap-get-process-filter (orig &rest args)
+  "Advise `process-filter' so it returns the unwrapped, original filter, so
+comparisions still work."
+  (let ((original-filter (process-get (car args) 'explain-pause-original-filter)))
+    ;; it might be nil: a default filter, or the process has not been called with
+    ;; set-process-filter with our advised callback, e.g. a long lived process
+    ;; that started before the mode was activated.
+    (if original-filter
+        original-filter
+      (apply orig args))))
+
+(defun explain-pause--wrap-get-process-sentinel (orig &rest args)
+  (let ((original-sentinel (process-get (car args) 'explain-pause-original-sentinel)))
+    ;; it might be nil: a default filter, or the process has not been called with
+    ;; set-process-filter with our advised callback, e.g. a long lived process
+    ;; that started before the mode was activated.
+    (if original-sentinel
+        original-sentinel
+      (apply orig args))))
 
 (defconst explain-pause--timer-frame-max-depth 64
   "The maximum depth a record chain for a timer can get.")
@@ -3010,7 +3053,10 @@ callback."
        '(
          ;; these are functions who setup callbacks which can be wrapped.
          (run-with-idle-timer . explain-pause--wrap-idle-timer-callback)
-         (run-with-timer . explain-pause--wrap-timer-callback)
+         (run-with-timer . explain-pause--wrap-timer-callback)))
+      (callback-around-family
+       '(
+         ;; timing callbacks, but they need around advice.
          (set-process-filter . explain-pause--wrap-set-process-filter-callback)
          (set-process-sentinel . explain-pause--wrap-set-process-sentinel-callback)))
       (make-process-family
@@ -3069,8 +3115,14 @@ callback."
       (advice-add process-func :around
                   #'explain-pause--wrap-make-process))
 
+    (advice-add 'process-filter :around #'explain-pause--wrap-get-process-filter)
+    (advice-add 'process-sentinel :around #'explain-pause--wrap-get-process-sentinel)
+
     (dolist (callback-func callback-family)
       (advice-add (car callback-func) :filter-args (cdr callback-func)))
+
+    (dolist (callback-func callback-around-family)
+      (advice-add (car callback-func) :around (cdr callback-func)))
 
     (advice-add 'file-notify-add-watch :filter-args
                 #'explain-pause--wrap-file-notify-add-watch)
@@ -3115,6 +3167,12 @@ github.com/lastquestion/explain-pause-mode")
 
     (dolist (callback-func callback-family)
       (advice-remove (car callback-func) (cdr callback-func)))
+
+    (dolist (callback-func callback-around-family)
+      (advice-remove (car callback-func) (cdr callback-func)))
+
+    (advice-remove 'process-filter #'explain-pause--wrap-get-process-filter)
+    (advice-remove 'process-sentinel #'explain-pause--wrap-get-process-sentinel)
 
     (dolist (process-func make-process-family)
       (advice-remove process-func

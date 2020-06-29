@@ -12,10 +12,10 @@ cases:=$(filter-out $(case-driver), $(wildcard tests/cases/*.el))
 case-tests: $(cases)
 
 $(cases): %.el:
-	emacs --batch -f toggle-debug-on-error -l $(case-driver) -l $@ -f "run-test"
+	emacs -batch -Q -f toggle-debug-on-error -l $(case-driver) -l $@ -f "run-test"
 
 unit-tests:
-	$(EMACS) -batch -f package-initialize -l explain-pause-mode.el -f buttercup-run-discover tests
-	$(EMACS) -batch -l explain-pause-mode.el -l tests/manual-test-command-logging.el
+	$(EMACS) -batch -Q -f package-initialize -l explain-pause-mode.el -f buttercup-run-discover tests
+	$(EMACS) -batch -Q -l explain-pause-mode.el -l tests/manual-test-command-logging.el
 
 tests: unit-tests case-tests
