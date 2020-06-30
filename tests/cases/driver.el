@@ -333,6 +333,13 @@ emacs is running at root of the project."
                        key)))))
    keys '()))
 
+(defun convert-to-special (key)
+  (cond
+   ((eq key 'f10)
+    "f10")
+   ((eq key 'quit)
+    "C-g")))
+
 (defun convert-to-str (keys)
   (mapconcat (lambda (key)
                (cond
@@ -344,26 +351,40 @@ emacs is running at root of the project."
                  key)))
              keys ""))
 
-(defun send-key (session &rest KEYS)
-  "Send KEYS to tmux session created by `start-test'"
-  (if wait-keys
-      (read-from-minibuffer (format "send %s..." KEYS))
-    (if verbose
-        (message "%s %s"
-                 (convert-to-str KEYS)
-                 (convert-to-hex KEYS))
-      (send-string-to-terminal ".")))
+(defun send-key-stream (session args)
+  "Actually send a key stream to tmux."
   (let ((proc (make-process
                :name "tmux"
                :buffer nil
-               :command `("tmux" "send-keys" "-H" "-t"
+               :command `("tmux" "send-keys" "-t"
                           ,(car session)
-                          ,@(convert-to-hex KEYS))
+                          ,@args)
                :connection 'pipe)))
     (while (process-live-p proc)
       (when verbose
         (spinner))
       (accept-process-output))))
+
+(defun send-key (session &rest KEYS)
+  "Send KEYS to tmux session created by `start-test'"
+  (when wait-keys
+    (read-from-minibuffer (format "send %s..." KEYS)))
+  (if verbose
+      (message "%s %s"
+               (convert-to-str KEYS)
+               (convert-to-hex KEYS))
+    (send-string-to-terminal "."))
+  (send-key-stream session
+                   (cons "-H" (convert-to-hex KEYS))))
+
+(defun send-special-key (session special-key)
+  "Send either f10 or ctrl-g."
+  (when wait-keys
+    (read-from-minibuffer (format "send %s..." special-key)))
+  (if verbose
+      (message "%s %s" special-key (convert-to-special special-key))
+    (send-string-to-terminal "."))
+  (send-key-stream session (cons (convert-to-special special-key) nil)))
 
 (defun m-key-string (session key command)
   (send-key session 'escape key)

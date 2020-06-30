@@ -315,7 +315,7 @@ in any `explain-pause-top' buffers."
   (interactive)
   (clrhash explain-pause-profile--profile-statistics))
 
-(defun explain-pause-profiles-ignore-command (command-set)
+(defun explain-pause-profiles-ignore-command (_command-set)
   "Ignore this command-set from ever being profiled."
   ;;TODO (interactive)
   t)
@@ -3074,6 +3074,9 @@ callback."
          read-char
          read-char-exclusive
          read-event
+         ;; Menu bar function that ultimately calls `read_key_sequence' which
+         ;; calls `read_char'.
+         x-popup-menu
          ;; These C functions ultimately call `read_minibuf' which will call
          ;; `recursive_edit' (in C), which means they will call
          ;; `call-interactively' (which we have advised.)
