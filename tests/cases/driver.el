@@ -186,7 +186,8 @@ emacs is running at root of the project."
                       "./tests/cases/driver.el"
                       )))
 
-  (let* ((name (file-name-base filename))
+  (let* ((emacs-binary (expand-file-name invocation-name invocation-directory))
+         (name (file-name-base filename))
          (socket-filename (concat (file-name-directory filename)
                                   name
                                   "-socket.sock"))
@@ -228,7 +229,7 @@ emacs is running at root of the project."
            (args `("tmux" nil ,name nil "new-session" "-d"
                    "-n" ,name ;; name the session
                    "-P" "-F" "\"#{pane_pid}\"" ;; get us the pid for later
-                   "emacs"
+                   ,emacs-binary
                    ,@emacs-args
                    "-l"
                    ,filename

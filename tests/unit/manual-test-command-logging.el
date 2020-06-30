@@ -32,9 +32,9 @@
         "<lambda> (arg-list: (x y z))")
        (pass (equal result compare)))
   (if pass
-      (message "passed")
-    (message "lambda is not working in explain-pause--command-as-string:
+      (message "\e[32mpassed\e[m")
+    (message "\e[31mlambda is not working in explain-pause--command-as-string:
 '%s' does not match '%s'.
 
-check tests/manual-test-command-logging" result compare)
+check tests/manual-test-command-logging\e[m" result compare)
     (kill-emacs 1)))
