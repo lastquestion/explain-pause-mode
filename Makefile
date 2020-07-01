@@ -11,6 +11,9 @@ ROOT_DIR:=$(dir $(realpath $(lastword $(MAKEFILE_LIST))))
 # all the test cases don't generate output so they need to be PHONY
 .PHONY: test case-tests $(cases)
 
+byte-compile:
+	$(EMACS) -batch -f batch-byte-compile explain-pause-mode.el
+
 print-emacs-version:
 	@echo $(ROOT_DIR)
 	@echo "Emacs version under test: " `$(EMACS) --version | head -n 1`

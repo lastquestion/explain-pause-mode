@@ -43,6 +43,10 @@
 (require 'nadvice)
 (require 'cl-macs)
 
+;; don't type check. note this only applies when (cl--compiling-file) returns t
+;; - e.g. when it's bytecompiled.
+(cl-declaim (optimize (safety 0) (speed 3)))
+
 ;; customizable behavior
 (defgroup explain-pause nil
   "Explain pauses in Emacs"
@@ -162,13 +166,6 @@ buffer."
   "The face used to indicate the currently sorted column in the header line."
   :group 'explain-pause-top)
 
-;; time lists are too expensive to create every single call
-;; convert to a integer of ms.
-(defsubst explain-pause--as-ms-exact (time)
-  "Returns the TIME object in exact ms, ignoring picoseconds."
-  (+ (* (+ (* (nth 0 time) 65536) (nth 1 time)) 1000)
-     (/ (nth 2 time) 1000)))
-
 (defcustom explain-pause-alert-normal-interval 15
   "What is the minimum amount of time, in minutes, between alerts when
 `explain-pause-alert-style' is normal? You can put a fractional value if you
@@ -181,6 +178,15 @@ wish."
 `explain-pause-alert-style' is normal?"
   :type 'integer
   :group 'explain-pause-alerting)
+
+(defvar explain-pause-mode)
+
+;; time lists are too expensive to create every single call
+;; convert to a integer of ms.
+(defsubst explain-pause--as-ms-exact (time)
+  "Returns the TIME object in exact ms, ignoring picoseconds."
+  (+ (* (+ (* (nth 0 time) 65536) (nth 1 time)) 1000)
+     (/ (nth 2 time) 1000)))
 
 ;; TODO perhaps this should also display minor modes? probably. minor modes can be interact
 ;; weirdly and become slow.
@@ -242,6 +248,48 @@ blocking execution (or we think so, anyway)."
   (mapconcat
    #'explain-pause--command-as-string
    command-set ", "))
+
+;; the record of an command that we measured
+;; theorywise, we are constructing a tree of records, all rooted at "emacs command
+;; loop". Idealistically, we could maintain this tree and calculate the timings
+;; by subtracting child times from our own. But because elisp actually executes
+;; only one thing at a time, structure the graph as a stack and pause tracking
+;; as we enter / exit by push/popping - we're traversing the graph as DFS
+;; as we execute.
+(cl-defstruct explain-pause-command-record
+  ;; the command this tracked
+  command
+  ;; was this a native frame
+  native
+  ;; the parent
+  parent
+
+  ;; timing
+  ;; the number of ms spent so far.
+  (executing-time 0)
+  ;; a TIME object as snap
+  entry-snap
+  ;; was this too slow
+  too-slow
+
+  ;; profiling:
+  ;; was profiling was started FOR this command
+  is-profiled
+  ;; was profiling started when this command started
+  under-profile
+  ;; the profile if it was
+  profile
+
+  ;; depth of the callstack so far
+  depth)
+
+(defconst explain-pause-root-command-loop
+  (make-explain-pause-command-record
+   :command 'root-emacs
+   :depth 0)
+  "All command records that `explain-pause' tracks ultimately are rooted to this
+command entry, which represents the top level command loop that begins in
+`keyboard.c' when called from the initial `recursive_edit' from `emacs.c'.")
 
 ;; profiling and slow statistics functions
 ;; TODO :equal list command
@@ -340,85 +388,86 @@ in any `explain-pause-top' buffers."
         (setf new-stat default-stat))
        (puthash command statistic explain-pause-profile--profile-statistics))))
 
-(let ((profile nil)
-      (statistic nil)
-      (command nil)
-      (slow-index nil))
+(eval-and-compile
   ;; for the mainline case, no profiles are stored but values are incremented
   ;; store these outside in a closure, so we don't need to create lets every call.
-  (defun explain-pause-profile--profile-measured-command (record)
-    "Record the statistics for this command.
+  (let ((profile nil)
+        (statistic nil)
+        (command nil)
+        (slow-index nil))
+    (defun explain-pause-profile--profile-measured-command (record)
+      "Record the statistics for this command.
 
 Always store the slowness. If profiling is on, store the profiling counts.
 Store the profile if it was profiled."
-    (unless (explain-pause-command-record-native record)
-      (cond
-       ;; did we try to profile but it was too fast? if this happens more
-       ;; then threshold times, reset the counter back to 0
-       ((and (explain-pause-command-record-is-profiled record)
-             (not (explain-pause-command-record-too-slow record)))
-
-        (explain-pause-profile--profile-get-statistic record)
-
-        ;; reuse profile var for attempt counter
-        (setq profile (aref statistic 2))
-        (if (< profile explain-pause-profile-saved-profiles)
-            (setf (aref statistic 2) (1+ profile))
-          ;; give up TODO force?
-          (setf (aref statistic 0) 0)
-          (setf (aref statistic 1) nil)
-          (setf (aref statistic 2) 0)))
-
-       ((explain-pause-command-record-too-slow record)
-        ;; otherwise, if we're too slow...
-        (explain-pause-profile--profile-get-statistic record)
-        (setq profile (explain-pause-command-record-profile record))
-
-        ;; increment the slow count
-        (setf (aref statistic 4) (1+ (aref statistic 4)))
-
-        ;; save the ms into the circular list
-        (setq slow-index (or (aref statistic 5) 0))
-        (setf (aref statistic (+ slow-index
-                                 explain-pause-profile--statistic-slow-count-offset))
-              (explain-pause-command-record-executing-time record))
-        ;; increment slow-ms-index to the next place
-        (setf (aref statistic 5)
-              (% (1+ slow-index)
-                 ;; don't use `explain-pause-profile-saved-profiles' because the value
-                 ;; might have changed
-                 (explain-pause-profile--statistic-slow-length statistic)))
-
+      (unless (explain-pause-command-record-native record)
         (cond
-         ;; add the profile if it exists.
-         ;; we assume that profiles happen relatively rarely, so it's ok to use
-         ;; a list so that 'eq comparisons work against head:
-         (profile
-          (let ((head (aref statistic 3))
-                (new-entry (vector
-                            (explain-pause-command-record-executing-time record)
-                            profile)))
+         ;; did we try to profile but it was too fast? if this happens more
+         ;; then threshold times, reset the counter back to 0
+         ((and (explain-pause-command-record-is-profiled record)
+               (not (explain-pause-command-record-too-slow record)))
 
-            (setf (aref statistic 3)
-                  (if (< (length head)
-                         explain-pause-profile-saved-profiles)
-                      (cons new-entry head)
-                    ;; need to make a duplicate list
-                    (cons new-entry
-                          (seq-take head
-                                    (- explain-pause-profile-saved-profiles 1))))))
+          (explain-pause-profile--profile-get-statistic record)
 
-          ;; reset for next time
-          (setf (aref statistic 0) 0)
-          (setf (aref statistic 1) nil))
-         (t
-          ;; reuse profile var for the counter here
-          (setq profile (aref statistic 0))
-          (when (>= profile 0) ;; only increment for "non-special" counts
-            (setq profile (1+ profile))
-            (setf (aref statistic 0) profile)
-            (setf (aref statistic 1)
-                  (>= profile explain-pause-profile-slow-threshold))))))))))
+          ;; reuse profile var for attempt counter
+          (setq profile (aref statistic 2))
+          (if (< profile explain-pause-profile-saved-profiles)
+              (setf (aref statistic 2) (1+ profile))
+            ;; give up TODO force?
+            (setf (aref statistic 0) 0)
+            (setf (aref statistic 1) nil)
+            (setf (aref statistic 2) 0)))
+
+         ((explain-pause-command-record-too-slow record)
+          ;; otherwise, if we're too slow...
+          (explain-pause-profile--profile-get-statistic record)
+          (setq profile (explain-pause-command-record-profile record))
+
+          ;; increment the slow count
+          (setf (aref statistic 4) (1+ (aref statistic 4)))
+
+          ;; save the ms into the circular list
+          (setq slow-index (or (aref statistic 5) 0))
+          (setf (aref statistic (+ slow-index
+                                   explain-pause-profile--statistic-slow-count-offset))
+                (explain-pause-command-record-executing-time record))
+          ;; increment slow-ms-index to the next place
+          (setf (aref statistic 5)
+                (% (1+ slow-index)
+                   ;; don't use `explain-pause-profile-saved-profiles' because the value
+                   ;; might have changed
+                   (explain-pause-profile--statistic-slow-length statistic)))
+
+          (cond
+           ;; add the profile if it exists.
+           ;; we assume that profiles happen relatively rarely, so it's ok to use
+           ;; a list so that 'eq comparisons work against head:
+           (profile
+            (let ((head (aref statistic 3))
+                  (new-entry (vector
+                              (explain-pause-command-record-executing-time record)
+                              profile)))
+
+              (setf (aref statistic 3)
+                    (if (< (length head)
+                           explain-pause-profile-saved-profiles)
+                        (cons new-entry head)
+                      ;; need to make a duplicate list
+                      (cons new-entry
+                            (seq-take head
+                                      (- explain-pause-profile-saved-profiles 1))))))
+
+            ;; reset for next time
+            (setf (aref statistic 0) 0)
+            (setf (aref statistic 1) nil))
+           (t
+            ;; reuse profile var for the counter here
+            (setq profile (aref statistic 0))
+            (when (>= profile 0) ;; only increment for "non-special" counts
+              (setq profile (1+ profile))
+              (setf (aref statistic 0) profile)
+              (setf (aref statistic 1)
+                    (>= profile explain-pause-profile-slow-threshold)))))))))))
 
 ;; table functions
 ;; I tried to use `tabulated-list' as well as `ewoc' but I decided to implement
@@ -426,10 +475,6 @@ Store the profile if it was profiled."
 ;; like philosophies around optimizing drawing...
 ;; part of it is already abstracted out into something close to reusable, but
 ;; other parts are not yet.
-
-;; don't type check. note this only applies when (cl--compiling-file) returns t
-;; - e.g. when it's bytecompiled.
-(cl-declaim (optimize (safety 0) (speed 3)))
 
 (cl-defstruct explain-pause-top--table
   ;; the list of entries to display, in sorted order
@@ -1295,48 +1340,6 @@ the width cannot be 0."
     (setf (explain-pause-top--table-buffer-index table) prev-buffer-index)
     (setf (explain-pause-top--table-prev-buffer-index table) buffer-index)))
 
-;; the record of an command that we measured
-;; theorywise, we are constructing a tree of records, all rooted at "emacs command
-;; loop". Idealistically, we could maintain this tree and calculate the timings
-;; by subtracting child times from our own. But because elisp actually executes
-;; only one thing at a time, structure the graph as a stack and pause tracking
-;; as we enter / exit by push/popping - we're traversing the graph as DFS
-;; as we execute.
-(cl-defstruct explain-pause-command-record
-  ;; the command this tracked
-  command
-  ;; was this a native frame
-  native
-  ;; the parent
-  parent
-
-  ;; timing
-  ;; the number of ms spent so far.
-  (executing-time 0)
-  ;; a TIME object as snap
-  entry-snap
-  ;; was this too slow
-  too-slow
-
-  ;; profiling:
-  ;; was profiling was started FOR this command
-  is-profiled
-  ;; was profiling started when this command started
-  under-profile
-  ;; the profile if it was
-  profile
-
-  ;; depth of the callstack so far
-  depth)
-
-(defconst explain-pause-root-command-loop
-  (make-explain-pause-command-record
-   :command 'root-emacs
-   :depth 0)
-  "All command records that `explain-pause' tracks ultimately are rooted to this
-command entry, which represents the top level command loop that begins in
-`keyboard.c' when called from the initial `recursive_edit' from `emacs.c'.")
-
 ;; explain-pause-top-mode
 ;; buffer-local variables that should be always private
 (defvar-local explain-pause-top--buffer-refresh-timer nil
@@ -1723,78 +1726,79 @@ within 15 minutes of the last time an alert was shown; or
       (when new-hook
         (add-hook 'explain-pause-measured-command-hook (cdr new-hook))))))
 
-(let ((notification-count 0)
-      (last-notified (current-time))
-      (alert-timer nil))
-  (defun explain-pause-mode--log-alert-normal (record)
-    "Notify the user of alerts when at least `explain-pause-alert-normal-minimum-count'
+(eval-and-compile
+  (let ((notification-count 0)
+        (last-notified (current-time))
+        (alert-timer nil))
+    (defun explain-pause-mode--log-alert-normal (record)
+      "Notify the user of alerts when at least `explain-pause-alert-normal-minimum-count'
 alerts have occurred, AND the time since the last notification (or startup)
 is greater then `explain-pause-alert-normal-interval' minutes."
-    (when (and (not (explain-pause-command-record-native record))
-               (explain-pause-command-record-too-slow record))
-      (setq notification-count (1+ notification-count))
-      (when (and (>= notification-count explain-pause-alert-normal-minimum-count)
-                 (> (float-time (time-subtract nil last-notified))
-                    (* explain-pause-alert-normal-interval 60))
-                 (not alert-timer))
-        (setq alert-timer
-              (run-with-idle-timer 1 nil
-                                   #'explain-pause-mode--log-alert-normal-display)))))
+      (when (and (not (explain-pause-command-record-native record))
+                 (explain-pause-command-record-too-slow record))
+        (setq notification-count (1+ notification-count))
+        (when (and (>= notification-count explain-pause-alert-normal-minimum-count)
+                   (> (float-time (time-subtract nil last-notified))
+                      (* explain-pause-alert-normal-interval 60))
+                   (not alert-timer))
+          (setq alert-timer
+                (run-with-idle-timer 1 nil
+                                     #'explain-pause-mode--log-alert-normal-display)))))
 
-  (defun explain-pause-mode--log-alert-normal-display ()
-    "Display the normal alert to the user but only if the minibuffer is not
+    (defun explain-pause-mode--log-alert-normal-display ()
+      "Display the normal alert to the user but only if the minibuffer is not
 active. If it is open, do nothing; at some point later, the conditions will
 fire again and this timer will be called again."
-    (setq alert-timer nil)
-    ;; if we are not actively in the minibuffer, display our message
-    (when (not (minibufferp (current-buffer)))
-      (message "Emacs was slow %d times recently. Run `explain-pause-top' to learn more." notification-count)
-      (setq notification-count 0)
-      (setq last-notified (current-time)))))
+      (setq alert-timer nil)
+      ;; if we are not actively in the minibuffer, display our message
+      (when (not (minibufferp (current-buffer)))
+        (message "Emacs was slow %d times recently. Run `explain-pause-top' to learn more." notification-count)
+        (setq notification-count 0)
+        (setq last-notified (current-time)))))
 
-(let ((notifications '())
-      (profiled-count 0)
-      (alert-timer nil))
-  (defun explain-pause-mode--log-alert-developer (record)
-    "Log all slow and profiling alerts in developer mode. They are gathered until
+  (let ((notifications '())
+        (profiled-count 0)
+        (alert-timer nil))
+    (defun explain-pause-mode--log-alert-developer (record)
+      "Log all slow and profiling alerts in developer mode. They are gathered until
 run-with-idle-timer allows an idle timer to run, and then they are printed
 to the minibuffer with a 2 second sit-for."
-    (when (and (not (explain-pause-command-record-native record))
-               (explain-pause-command-record-too-slow record))
-      (push (explain-pause-command-record-executing-time record) notifications)
-      (when (explain-pause-command-record-profile record)
-        (setq profiled-count (1+ profiled-count)))
-      (unless alert-timer
-        (setq alert-timer
-              (run-with-idle-timer
-               0.5 nil
-               #'explain-pause-mode--log-alert-developer-display)))))
+      (when (and (not (explain-pause-command-record-native record))
+                 (explain-pause-command-record-too-slow record))
+        (push (explain-pause-command-record-executing-time record) notifications)
+        (when (explain-pause-command-record-profile record)
+          (setq profiled-count (1+ profiled-count)))
+        (unless alert-timer
+          (setq alert-timer
+                (run-with-idle-timer
+                 0.5 nil
+                 #'explain-pause-mode--log-alert-developer-display)))))
 
-  (defun explain-pause-mode--log-alert-developer-display ()
-    "Display the last set of notifications in the echo area when the minibuffer is
+    (defun explain-pause-mode--log-alert-developer-display ()
+      "Display the last set of notifications in the echo area when the minibuffer is
 not active."
-    (if (minibufferp (current-buffer))
-        ;; try again
-        (setq alert-timer
-              (run-with-idle-timer
-               (time-add (current-idle-time) 0.5)
-               nil
-               #'explain-pause-mode--log-alert-developer-display))
-      ;; ok, let's draw
-      (message "Emacs was slow: %s ms%s%s"
-               (mapconcat #'number-to-string notifications ", ")
-               (if (> profiled-count 0)
-                   (format " of which %d were profiled" profiled-count)
-                 "")
-               ". Run `explain-pause-top' to learn more.")
+      (if (minibufferp (current-buffer))
+          ;; try again
+          (setq alert-timer
+                (run-with-idle-timer
+                 (time-add (current-idle-time) 0.5)
+                 nil
+                 #'explain-pause-mode--log-alert-developer-display))
+        ;; ok, let's draw
+        (message "Emacs was slow: %s ms%s%s"
+                 (mapconcat #'number-to-string notifications ", ")
+                 (if (> profiled-count 0)
+                     (format " of which %d were profiled" profiled-count)
+                   "")
+                 ". Run `explain-pause-top' to learn more.")
 
-      ;; reset so more notifications can pile up while we wait
-      (setq notifications '())
-      (setq profiled-count 0)
-      (sit-for 2)
-      (message nil)
-      ;; don't let us get rescheduled until we're really done.
-      (setq alert-timer nil))))
+        ;; reset so more notifications can pile up while we wait
+        (setq notifications '())
+        (setq profiled-count 0)
+        (sit-for 2)
+        (message nil)
+        ;; don't let us get rescheduled until we're really done.
+        (setq alert-timer nil)))))
 
 ;; logging customization
 ;; depressingly can't define it at the top because `explain-pause-mode-change-alert-style'
@@ -3049,153 +3053,160 @@ callback."
       'timer)
     ,@(seq-drop args 2)))
 
-(let ((callback-family
-       '(
-         ;; these are functions who setup callbacks which can be wrapped.
-         (run-with-idle-timer . explain-pause--wrap-idle-timer-callback)
-         (run-with-timer . explain-pause--wrap-timer-callback)))
-      (callback-around-family
-       '(
-         ;; timing callbacks, but they need around advice.
-         (set-process-filter . explain-pause--wrap-set-process-filter-callback)
-         (set-process-sentinel . explain-pause--wrap-set-process-sentinel-callback)))
-      (make-process-family
-       ;; These C functions start async processes, which raise callbacks
-       ;; `filter' and `sentinel'. Wrap those.
-       '(make-process
-         make-pipe-process
-         make-network-process))
-      (native
-       '(
-         ;; These C functions ultimately call `read_char' which will run timers,
-         ;; redisplay, and call `sit_for'.
-         read-key-sequence
-         read-key-sequence-vector
-         read-char
-         read-char-exclusive
-         read-event
-         ;; Menu bar function that ultimately calls `read_key_sequence' which
-         ;; calls `read_char'.
-         x-popup-menu
-         ;; These C functions ultimately call `read_minibuf' which will call
-         ;; `recursive_edit' (in C), which means they will call
-         ;; `call-interactively' (which we have advised.)
-         ;; read-from-minibuffer -> read_minibuf
-         ;; read-string -> Fread_from_minibuffer -> read_minibuf
-         ;; read-no-blanks-input -> read_minibuf
-         read-from-minibuffer
-         read-string
-         read-no-blanks-input))
-      (completing-read-family
-       '(
-         ;; These C functions ultimately call `completing_read' which will
-         ;; call `completing-read-function'.
-         read-command
-         read-function
-         read-variable
-         completing-read))
-      (install-attempt 0))
+(eval-and-compile
+  (let ((callback-family
+         '(
+           ;; these are functions who setup callbacks which can be wrapped.
+           (run-with-idle-timer . explain-pause--wrap-idle-timer-callback)
+           (run-with-timer . explain-pause--wrap-timer-callback)))
+        (callback-around-family
+         '(
+           ;; timing callbacks, but they need around advice.
+           (set-process-filter . explain-pause--wrap-set-process-filter-callback)
+           (set-process-sentinel . explain-pause--wrap-set-process-sentinel-callback)))
+        (make-process-family
+         ;; These C functions start async processes, which raise callbacks
+         ;; `filter' and `sentinel'. Wrap those.
+         '(make-process
+           make-pipe-process
+           make-network-process))
+        (native
+         '(
+           ;; These C functions ultimately call `read_char' which will run timers,
+           ;; redisplay, and call `sit_for'.
+           read-key-sequence
+           read-key-sequence-vector
+           read-char
+           read-char-exclusive
+           read-event
+           ;; Menu bar function that ultimately calls `read_key_sequence' which
+           ;; calls `read_char'.
+           x-popup-menu
+           ;; These C functions ultimately call `read_minibuf' which will call
+           ;; `recursive_edit' (in C), which means they will call
+           ;; `call-interactively' (which we have advised.)
+           ;; read-from-minibuffer -> read_minibuf
+           ;; read-string -> Fread_from_minibuffer -> read_minibuf
+           ;; read-no-blanks-input -> read_minibuf
+           read-from-minibuffer
+           read-string
+           read-no-blanks-input))
+        (completing-read-family
+         '(
+           ;; These C functions ultimately call `completing_read' which will
+           ;; call `completing-read-function'.
+           read-command
+           read-function
+           read-variable
+           completing-read))
+        (install-attempt 0))
 
-  (defun explain-pause-mode--install-hooks ()
-    "Actually install hooks for `explain-pause-mode'."
-    (advice-add 'call-interactively :around
-                #'explain-pause--wrap-call-interactively)
-    (advice-add 'funcall-interactively :before
-                #'explain-pause--before-funcall-interactively)
+    (defun explain-pause-mode--install-hooks ()
+      "Actually install hooks for `explain-pause-mode'."
+      (advice-add 'call-interactively :around
+                  #'explain-pause--wrap-call-interactively)
+      (advice-add 'funcall-interactively :before
+                  #'explain-pause--before-funcall-interactively)
 
-    ;; OK, we're prepared to advise native functions and timers:
-    (dolist (native-func native)
-      (advice-add native-func :around
-                  #'explain-pause--wrap-native))
+      ;; OK, we're prepared to advise native functions and timers:
+      (dolist (native-func native)
+        (advice-add native-func :around
+                    #'explain-pause--wrap-native))
 
-    (dolist (completing-read-func completing-read-family)
-      (advice-add completing-read-func :around
-                  #'explain-pause--wrap-completing-read-family))
+      (dolist (completing-read-func completing-read-family)
+        (advice-add completing-read-func :around
+                    #'explain-pause--wrap-completing-read-family))
 
-    (advice-add 'read-buffer :around #'explain-pause--wrap-read-buffer)
+      (advice-add 'read-buffer :around #'explain-pause--wrap-read-buffer)
 
-    (dolist (process-func make-process-family)
-      (advice-add process-func :around
-                  #'explain-pause--wrap-make-process))
+      (dolist (process-func make-process-family)
+        (advice-add process-func :around
+                    #'explain-pause--wrap-make-process))
 
-    (advice-add 'process-filter :around #'explain-pause--wrap-get-process-filter)
-    (advice-add 'process-sentinel :around #'explain-pause--wrap-get-process-sentinel)
+      (advice-add 'process-filter :around #'explain-pause--wrap-get-process-filter)
+      (advice-add 'process-sentinel :around #'explain-pause--wrap-get-process-sentinel)
 
-    (dolist (callback-func callback-family)
-      (advice-add (car callback-func) :filter-args (cdr callback-func)))
+      (dolist (callback-func callback-family)
+        (advice-add (car callback-func) :filter-args (cdr callback-func)))
 
-    (dolist (callback-func callback-around-family)
-      (advice-add (car callback-func) :around (cdr callback-func)))
+      (dolist (callback-func callback-around-family)
+        (advice-add (car callback-func) :around (cdr callback-func)))
 
-    (advice-add 'file-notify-add-watch :filter-args
-                #'explain-pause--wrap-file-notify-add-watch)
+      (advice-add 'file-notify-add-watch :filter-args
+                  #'explain-pause--wrap-file-notify-add-watch)
 
-    (setq explain-pause--current-command-record
-          explain-pause-root-command-loop)
+      (setq explain-pause--current-command-record
+            explain-pause-root-command-loop)
 
-    (when explain-pause-log--send-process
-      (explain-pause-log--send-dgram
-       "(\"enabled\")\n"))
+      (when explain-pause-log--send-process
+        (explain-pause-log--send-dgram
+         "(\"enabled\")\n"))
 
-    (message "Explain-pause-mode enabled."))
+      (message "Explain-pause-mode enabled."))
 
-  (defun explain-pause-mode--enable-hooks ()
-    "Install hooks for `explain-pause-mode' if it is being run at the top of the
+    (defun explain-pause-mode--try-enable-hooks ()
+      "Attempt to install `explain-pause-mode' hooks on next post-command-hook
+run."
+      (setq install-attempt 0)
+      (add-hook 'post-command-hook #'explain-pause-mode--enable-hooks))
+
+    (defun explain-pause-mode--enable-hooks ()
+      "Install hooks for `explain-pause-mode' if it is being run at the top of the
 emacs loop, e.g. not inside `call-interactively' or `sit-for' or any interleaved
 timers, etc. Otherwise, wait for next invocation."
-    (if (> install-attempt 5)
-        (progn
-          (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
-          (message "Unable to install `explain-pause-mode', please report a bug to \
+      (if (> install-attempt 5)
+          (progn
+            (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
+            (message "Unable to install `explain-pause-mode', please report a bug to \
 github.com/lastquestion/explain-pause-mode")
-          (setq explain-pause-mode nil))
-      (let ((top-of-loop t))
-        (mapbacktrace (lambda (_evaled func _args _flags)
-                        (unless (eq func 'explain-pause-mode--enable-hooks)
-                          (setq top-of-loop nil)))
-                      #'explain-pause-mode--enable-hooks)
-        (if (not top-of-loop)
-            (unless (active-minibuffer-window)
-              ;; well, it's definitely not going to work if the user is got
-              ;; a minibuffer open. wait until the minibuffer goes away.
-              (setq install-attempt (1+ install-attempt)))
-          ;; ok, we're safe:
-          (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
-          (explain-pause-mode--install-hooks)))))
+            (setq explain-pause-mode nil))
+        (let ((top-of-loop t))
+          (mapbacktrace (lambda (_evaled func _args _flags)
+                          (unless (eq func 'explain-pause-mode--enable-hooks)
+                            (setq top-of-loop nil)))
+                        #'explain-pause-mode--enable-hooks)
+          (if (not top-of-loop)
+              (unless (active-minibuffer-window)
+                ;; well, it's definitely not going to work if the user is got
+                ;; a minibuffer open. wait until the minibuffer goes away.
+                (setq install-attempt (1+ install-attempt)))
+            ;; ok, we're safe:
+            (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
+            (explain-pause-mode--install-hooks)))))
 
-  (defun explain-pause-mode--disable-hooks ()
-    "Disable hooks installed by `explain-pause-mode--install-hooks'."
-    (advice-remove 'file-notify-add-watch
-                   #'explain-pause--wrap-file-notify-add-watch)
+    (defun explain-pause-mode--disable-hooks ()
+      "Disable hooks installed by `explain-pause-mode--install-hooks'."
+      (advice-remove 'file-notify-add-watch
+                     #'explain-pause--wrap-file-notify-add-watch)
 
-    (dolist (callback-func callback-family)
-      (advice-remove (car callback-func) (cdr callback-func)))
+      (dolist (callback-func callback-family)
+        (advice-remove (car callback-func) (cdr callback-func)))
 
-    (dolist (callback-func callback-around-family)
-      (advice-remove (car callback-func) (cdr callback-func)))
+      (dolist (callback-func callback-around-family)
+        (advice-remove (car callback-func) (cdr callback-func)))
 
-    (advice-remove 'process-filter #'explain-pause--wrap-get-process-filter)
-    (advice-remove 'process-sentinel #'explain-pause--wrap-get-process-sentinel)
+      (advice-remove 'process-filter #'explain-pause--wrap-get-process-filter)
+      (advice-remove 'process-sentinel #'explain-pause--wrap-get-process-sentinel)
 
-    (dolist (process-func make-process-family)
-      (advice-remove process-func
-                     #'explain-pause--wrap-make-process))
+      (dolist (process-func make-process-family)
+        (advice-remove process-func
+                       #'explain-pause--wrap-make-process))
 
-    (advice-remove 'read-buffer #'explain-pause--wrap-read-buffer)
+      (advice-remove 'read-buffer #'explain-pause--wrap-read-buffer)
 
-    (dolist (completing-read-func completing-read-family)
-      (advice-remove completing-read-func
-                     #'explain-pause--wrap-completing-read-family))
+      (dolist (completing-read-func completing-read-family)
+        (advice-remove completing-read-func
+                       #'explain-pause--wrap-completing-read-family))
 
-    (dolist (native-func native)
-      (advice-remove native-func
-                     #'explain-pause--wrap-native))
+      (dolist (native-func native)
+        (advice-remove native-func
+                       #'explain-pause--wrap-native))
 
-    (advice-remove 'call-interactively
-                   #'explain-pause--wrap-call-interactively)
+      (advice-remove 'call-interactively
+                     #'explain-pause--wrap-call-interactively)
 
-    (advice-remove 'funcall-interactively
-                   #'explain-pause--before-funcall-interactively)))
+      (advice-remove 'funcall-interactively
+                     #'explain-pause--before-funcall-interactively))))
 
 ;;;###autoload
 (define-minor-mode explain-pause-mode
@@ -3241,8 +3252,7 @@ must install itself after some time while Emacs is not doing anything."
           (add-hook 'emacs-startup-hook #'explain-pause-mode--enable-hooks)
         ;; no, then we better run after the next command, which we hope
         ;; is top level.
-        (setq install-attempt 0)
-        (add-hook 'post-command-hook #'explain-pause-mode--enable-hooks))))
+        (explain-pause-mode--try-enable-hooks))))
    (t
     (explain-pause-mode--disable-hooks))))
 
