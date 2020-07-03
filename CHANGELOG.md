@@ -17,8 +17,8 @@
 * `explain-pause-alert-normal-minimum-count`
 
 #### Bug fixes
-* Fix `magit` commit over TRAMP (#46)
-* Fix `treemacs` nil dereference in process-filter (#44)
-* Fix `explain-pause-top` crash when an item already exists on first render (#40)
-* Improve how `explain-pause-top` shows lambdas and closures (#34)
-* Fix `magit` commit locally sometimes breaking when `explain-pause` attempts to profile while already profiling (#26) 
+* Fix `magit` commit over TRAMP ([#46](https://github.com/lastquestion/explain-pause-mode/issues/46))
+* Fix `treemacs` nil dereference in process-filter ([#44](https://github.com/lastquestion/explain-pause-mode/issues/44))
+* Fix `explain-pause-top` crash when an item already exists on first render ([#40](https://github.com/lastquestion/explain-pause-mode/issues/))
+* Improve how `explain-pause-top` shows lambdas and closures ([#34](https://github.com/lastquestion/explain-pause-mode/issues/))
+* Fix `magit` commit locally sometimes breaking when `explain-pause` attempts to profile while already profiling ([#26](https://github.com/lastquestion/explain-pause-mode/issues/))
