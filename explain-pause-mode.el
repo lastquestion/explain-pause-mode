@@ -2290,8 +2290,10 @@ represent the push and pop indices. Reserve one empty slot to differentiate
 empty and full.")
 
 (defun explain-pause-log--missing-socket-disable ()
-  ;;TODO
-  (debug))
+  (explain-pause-log-off)
+  (message "Explain-pause-mode stopped logging to socket. It got too full.")
+  (sit-for 2)
+  (message nil))
 
 (defsubst explain-pause-log--send-dgram (str)
   "Write to the socket if it is enabled. The DGRAM code has its own special
@@ -3090,7 +3092,10 @@ callback."
            ;; read-no-blanks-input -> read_minibuf
            read-from-minibuffer
            read-string
-           read-no-blanks-input))
+           read-no-blanks-input
+           ;; recursive edit ultimately calls `command-loop' and unwinds out
+           ;; either to the call site or to top level
+           recursive-edit))
         (completing-read-family
          '(
            ;; These C functions ultimately call `completing_read' which will
@@ -3157,7 +3162,7 @@ timers, etc. Otherwise, wait for next invocation."
       (if (> install-attempt 5)
           (progn
             (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
-            (message "Unable to install `explain-pause-mode', please report a bug to \
+            (message "Unable to install `explain-pause-mode'. please report a bug to \
 github.com/lastquestion/explain-pause-mode")
             (setq explain-pause-mode nil))
         (let ((top-of-loop t))
@@ -3166,9 +3171,9 @@ github.com/lastquestion/explain-pause-mode")
                             (setq top-of-loop nil)))
                         #'explain-pause-mode--enable-hooks)
           (if (not top-of-loop)
-              (unless (active-minibuffer-window)
-                ;; well, it's definitely not going to work if the user is got
-                ;; a minibuffer open. wait until the minibuffer goes away.
+              (when (eq 0 (recursion-depth))
+                ;; well, it won't work until the user gets out of that...
+                ;; ignore commands until we're out of recursive edits
                 (setq install-attempt (1+ install-attempt)))
             ;; ok, we're safe:
             (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
