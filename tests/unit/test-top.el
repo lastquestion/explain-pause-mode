@@ -172,4 +172,52 @@
      (expect
       (explain-pause-top--split-at-space "abcdef ghi" '(2 10))
       :to-equal
-      '("a\\" "bcdef ghi"))))
+      '("a\\" "bcdef ghi")))
+
+ (it "splits multiple max-length exactly to max"
+     (expect
+      (explain-pause-top--split-at-space "abc 1234567" '(4 7))
+      :to-equal
+      '("abc" "1234567"))))
+
+(describe
+ "explain-pause-top--concat-to-width"
+
+ (it "adds with separator"
+     (expect
+      (explain-pause-top--concat-to-width
+       '("AA" "BB" "CCC" "DDDD")
+       5
+       "|")
+      :to-equal
+      "AA BB|CCC|DDDD"))
+
+ (it "always adds one"
+     (expect
+      (explain-pause-top--concat-to-width
+       '("AAA" "BB" "CCCC" "D")
+       2
+       "|")
+      :to-equal
+      "AAA|BB|CCCC|D"))
+
+ (it "always adds first item even if len is short"
+     (expect
+      (explain-pause-top--concat-to-width
+       '("AAAA" "B" "C" "D")
+       3
+       "|")
+      :to-equal
+      "AAAA|B C|D"))
+
+ (it "returns empty for empty list"
+     (expect
+      (explain-pause-top--concat-to-width '() 5 "|")
+      :to-equal
+      ""))
+
+ (it "works with one entry"
+     (expect
+      (explain-pause-top--concat-to-width '("A") 6 "|")
+      :to-equal
+      "A")))
