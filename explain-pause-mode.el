@@ -133,8 +133,6 @@ These commands must be fast, because this hook is executed on every command,
 not just slow commands. You cannot give up execution in these commands in
 any way, e.g. do not call any family of functions that `sit-for', `read-key',
 etc. etc.")
-(add-hook 'explain-pause-measured-command-hook
-          #'explain-pause-profile--profile-measured-command)
 
 ;; custom faces
 (defface explain-pause-top-slow
@@ -3142,6 +3140,9 @@ callback."
 
       (setq explain-pause--current-command-record
             explain-pause-root-command-loop)
+
+      (add-hook 'explain-pause-measured-command-hook
+          #'explain-pause-profile--profile-measured-command)
 
       (when explain-pause-log--send-process
         (explain-pause-log--send-dgram
