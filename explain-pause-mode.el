@@ -3053,6 +3053,49 @@ callback."
       'timer)
     ,@(seq-drop args 2)))
 
+(defun explain-pause--wrap-existing-timer-list (list kind)
+  "Wrap an an existing timer list, so they are setup ready for further calls."
+  ;; hypothetically, we're reaching into timer internals.
+  ;; YOLO!
+  (dolist (timer list)
+    (unless (eq (timer--function timer) 'explain-pause--wrap-callback)
+      (let ((original-func (timer--function timer))
+            (original-args (timer--args timer)))
+        (timer-set-function timer #'explain-pause--wrap-callback
+                            `(,(explain-pause--generate-timer-parent
+                                original-func
+                                ;; we don't know where it came from
+                                explain-pause-root-command-loop
+                                kind)
+                              ,original-func
+                              ,@original-args))))))
+
+(defun explain-pause--wrap-existing-timers ()
+  "Wrap existing timers so they are setup ready for futher calls."
+  (explain-pause--wrap-existing-timer-list timer-list 'timer)
+  (explain-pause--wrap-existing-timer-list timer-idle-list 'idle-timer))
+
+(defun explain-pause--wrap-existing-processes ()
+  "Wrap existing processes so they are setup ready for further calls."
+  ;; be careful if we are being run again, e.g. enable-disable-enable;
+  ;; check to see if the process has already been marked by us.
+  (dolist (process (process-list))
+    (unless (process-get process 'explain-pause-process-frame)
+      (let* ((name (process-name process))
+             (original-filter (process-filter process))
+             (original-sentinel (process-sentinel process))
+             (process-frame
+              (explain-pause--command-record-from-parent
+               ;; we don't really know where it was started from, use root
+               explain-pause--current-command-record
+               explain-pause-root-command-loop
+               name)))
+
+        (process-put process 'explain-pause-process-frame process-frame)
+        ;; call set which has been advised by this point:
+        (set-process-filter process original-filter)
+        (set-process-sentinel process original-sentinel)))))
+
 (eval-and-compile
   (let ((callback-family
          '(
@@ -3142,7 +3185,10 @@ callback."
             explain-pause-root-command-loop)
 
       (add-hook 'explain-pause-measured-command-hook
-          #'explain-pause-profile--profile-measured-command)
+                #'explain-pause-profile--profile-measured-command)
+
+      (explain-pause--wrap-existing-processes)
+      (explain-pause--wrap-existing-timers)
 
       (when explain-pause-log--send-process
         (explain-pause-log--send-dgram
@@ -3151,34 +3197,42 @@ callback."
       (message "Explain-pause-mode enabled."))
 
     (defun explain-pause-mode--try-enable-hooks ()
-      "Attempt to install `explain-pause-mode' hooks on next post-command-hook
-run."
+      "Attempt to install `explain-pause-mode' hooks."
       (setq install-attempt 0)
-      (add-hook 'post-command-hook #'explain-pause-mode--enable-hooks))
+      (explain-pause-mode--enable-hooks))
 
     (defun explain-pause-mode--enable-hooks ()
       "Install hooks for `explain-pause-mode' if it is being run at the top of the
 emacs loop, e.g. not inside `call-interactively' or `sit-for' or any interleaved
-timers, etc. Otherwise, wait for next invocation."
+timers, etc. Otherwise, try again."
+      (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
+
       (if (> install-attempt 5)
           (progn
-            (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
             (message "Unable to install `explain-pause-mode'. please report a bug to \
 github.com/lastquestion/explain-pause-mode")
             (setq explain-pause-mode nil))
         (let ((top-of-loop t))
+          ;; do not install if we are not top of loop
+          ;;
+          ;; this covers init.el install or command line args, because command_loop
+          ;; calls post-command-hook as the first thing it does.
           (mapbacktrace (lambda (_evaled func _args _flags)
-                          (unless (eq func 'explain-pause-mode--enable-hooks)
+                          (unless (or (eq func 'explain-pause-mode--enable-hooks)
+                                      (eq func 'explain-pause-mode--try-enable-hooks))
                             (setq top-of-loop nil)))
                         #'explain-pause-mode--enable-hooks)
-          (if (not top-of-loop)
-              (when (eq 0 (recursion-depth))
-                ;; well, it won't work until the user gets out of that...
-                ;; ignore commands until we're out of recursive edits
-                (setq install-attempt (1+ install-attempt)))
+          (cond
+           ((not top-of-loop)
+            ;; we were run via a timer, a call interactively, or startup, etc. etc. etc
+            ;; install on next post-command-hook.
+            ;; ignore commands until we're out of recursive edits
+            (when (eq 0 (recursion-depth))
+              (setq install-attempt (1+ install-attempt)))
+            (add-hook 'post-command-hook #'explain-pause-mode--enable-hooks))
+           (top-of-loop
             ;; ok, we're safe:
-            (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
-            (explain-pause-mode--install-hooks)))))
+            (explain-pause-mode--install-hooks))))))
 
     (defun explain-pause-mode--disable-hooks ()
       "Disable hooks installed by `explain-pause-mode--install-hooks'."
@@ -3240,25 +3294,7 @@ must install itself after some time while Emacs is not doing anything."
 
   (cond
    (explain-pause-mode
-    (let ((is-in-init-code nil))
-      ;; we need to know if we are being loaded in init.el. if so,
-      ;; we cannot install hooks right away, because read-event is used in
-      ;; `terminal-init-xterm' for some reason... there are comments in
-      ;; emacs code implying this could be fixed but, it's not.
-      ;; check for `top-level':
-      (mapbacktrace (lambda (_evaled func _args _flags)
-                      (when (eq func top-level)
-                        (setq is-in-init-code t))))
-
-      (if is-in-init-code
-          ;; use `emacs-startup-hook' as the earliest point we could hook. this
-          ;; runs after `command-line' which calls
-          ;; `tty-run-terminal-initialization' which is what calls the xterm
-          ;; init.
-          (add-hook 'emacs-startup-hook #'explain-pause-mode--enable-hooks)
-        ;; no, then we better run after the next command, which we hope
-        ;; is top level.
-        (explain-pause-mode--try-enable-hooks))))
+    (explain-pause-mode--try-enable-hooks))
    (t
     (explain-pause-mode--disable-hooks))))
 
