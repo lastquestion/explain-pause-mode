@@ -226,7 +226,7 @@ may generate strings with format specifiers in them."
             (seq-filter #'symbolp (aref cmd 2))))
    ((not (listp cmd))
     ;; something weird. This should not happen.
-    "Unknown (please file a bug)")
+    (format "Unknown (please file a bug) %s" cmd))
    ;; closure. hypothetically, this is defined as a implementation detail,
    ;; but we'll read it anyway...
    ((eq (car cmd) 'closure)
@@ -235,7 +235,7 @@ may generate strings with format specifiers in them."
    ((eq (car cmd) 'lambda)
     (format "<lambda> (arg-list: %s)" (nth 1 cmd)))
    (t
-    "Unknown (please file a bug)")))
+    (format "Unknown (please file a bug) %s" cmd))))
 
 ;; TODO not used right now...
 (defun explain-pause--command-set-as-string (command-set)
@@ -3107,6 +3107,73 @@ callback."
         (set-process-filter process original-filter)
         (set-process-sentinel process original-sentinel)))))
 
+(defconst explain-pause--native-called-hooks
+  '(post-command-hook pre-command-hook))
+
+(defsubst explain-pause--generate-hook-wrapper (hook-func hook-list)
+  "Generate a lambda wrapper for advice to wrap the function HOOK-FUNC so it
+generates a frame as HOOK-LIST when called. We grab the original symbol
+of HOOK-FUNC, so we can refer to the symbol if possible."
+  ;; TODO perhaps dry with explain-pause--wrap-callback
+  (lambda (orig-func &rest args)
+    (if (not explain-pause-mode)
+        (apply orig-func args)
+
+      (explain-pause--pause-call-unpause
+       (format "wrap hook %s for %s" hook-func hook-list)
+       ;; it would be nice to avoid this let but in hooks people make them
+       ;; re-entrant and just call them randomly. be defensive.
+       (let ((parent
+              (explain-pause--command-record-from-parent
+               current-record
+               ;; the parent is root because we are being called from
+               ;; native code outside the command loop. TODO it's possible
+               ;; we can figure out more accurately?
+               explain-pause-root-command-loop
+               hook-list)))
+         (explain-pause--command-record-from-parent
+          parent
+          parent
+          hook-func))
+       (apply orig-func args)))))
+
+(defsubst explain-pause--advice-add-hook (hook-func hook-list)
+  "Add a hook-wrapper advice for HOOK-FUNC for type HOOK-LIST, naming the
+lambda advice so we can reference it later."
+  (advice-add hook-func :around
+              (explain-pause--generate-hook-wrapper hook-func hook-list)
+              '((name . (format "explain-pause-wrap-hook-%s" hook-list)))))
+
+(defun explain-pause--wrap-add-hook (args)
+  "Advise add-hook to advise the hook itself to add a frame when called from
+native code outside command loop."
+  (let* ((hook-list (nth 0 args))
+         (hook-func (nth 1 args)))
+    (when (and (seq-contains explain-pause--native-called-hooks hook-list)
+               (functionp hook-func))
+      (explain-pause--advice-add-hook hook-func hook-list)))
+  args)
+
+(defun explain-pause--wrap-existing-hooks-in-list (hook-kind hook-list)
+  "Wrap existing hooks in HOOK-LIST with WRAP-FUNC."
+  (dolist (hook hook-list)
+    (when (functionp hook)
+      (explain-pause--advice-add-hook hook hook-kind))))
+
+(defun explain-pause--wrap-existing-hooks ()
+  "Wrap existing hooks in hook lists that are called from native code outside
+command loop, for both the default value and all buffer local values."
+  (dolist (hook-list explain-pause--native-called-hooks)
+    ;; the default value
+    (explain-pause--wrap-existing-hooks-in-list hook-list (default-value hook-list))
+    ;; for each buffer
+    (cl-loop
+     for buffer being the buffers
+     do
+     (explain-pause--wrap-existing-hooks-in-list
+      hook-list
+      (buffer-local-value hook-list buffer)))))
+
 (eval-and-compile
   (let ((callback-family
          '(
@@ -3164,6 +3231,8 @@ callback."
                   #'explain-pause--wrap-call-interactively)
       (advice-add 'funcall-interactively :before
                   #'explain-pause--before-funcall-interactively)
+      (advice-add 'add-hook :filter-args
+                  #'explain-pause--wrap-add-hook)
 
       ;; OK, we're prepared to advise native functions and timers:
       (dolist (native-func native)
@@ -3200,6 +3269,7 @@ callback."
 
       (explain-pause--wrap-existing-processes)
       (explain-pause--wrap-existing-timers)
+      (explain-pause--wrap-existing-hooks)
 
       (when explain-pause-log--send-process
         (explain-pause-log--send-dgram
@@ -3272,6 +3342,9 @@ github.com/lastquestion/explain-pause-mode")
       (dolist (native-func native)
         (advice-remove native-func
                        #'explain-pause--wrap-native))
+
+      (advice-remove 'add-hook
+                     #'explain-pause--wrap-add-hook)
 
       (advice-remove 'call-interactively
                      #'explain-pause--wrap-call-interactively)

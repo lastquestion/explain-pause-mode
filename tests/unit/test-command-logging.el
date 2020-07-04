@@ -78,13 +78,13 @@
      (expect (explain-pause--command-as-string
               '(bar))
               :to-equal
-              "Unknown (please file a bug)"))
+              "Unknown (please file a bug) (bar)"))
 
  (it "prints unknown for values"
      (expect (explain-pause--command-as-string
               10)
               :to-equal
-              "Unknown (please file a bug)"))
+              "Unknown (please file a bug) 10"))
 
  (it "works for subrp"
      (expect (explain-pause--command-as-string
