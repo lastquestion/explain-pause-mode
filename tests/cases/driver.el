@@ -98,10 +98,19 @@ inclusively."
         head
       nil)))
 
+(defun get-value (stream valname)
+  "Get the value of valanme that was set by the first 'value' event in stream"
+  (nth 2 (car (find-ptr stream (find-by "value" valname)))))
+
 (defun get-value-between (span valname)
   "Get the value of valname that was set by a `value` event
 in span."
   (nth 2 (car (find-ptr-between span (find-by "value" valname)))))
+
+(defun find-enabled (stream)
+  "Find the enable log."
+  (find-ptr stream (lambda (x)
+                     (equal (nth 0 x) "enabled"))))
 
 (defun find-by (type command)
   "Create a PRED to find a event by TYPE for COMMAND."
@@ -235,6 +244,9 @@ emacs is running at root of the project."
                    ,filename
                    ,@boot-args))
            (exit-code nil))
+
+      (when verbose
+        (message "%s" args))
 
       (setq exit-code (apply 'call-process args))
 
@@ -412,6 +424,20 @@ it is assumed `test-setup' has trapped."
     (signal-process (nth 1 session) 'sigusr1)))
 
 ;; inside tested code functions
+(defun check-buffers ()
+  "Find any buffer with backtrace or explain-pause-mode-report-bug or
+if messages buffer has error message."
+  (cl-loop
+   for buffer being the buffers
+   do
+   (let ((name (buffer-name buffer)))
+     (when (or (string-match-p "backtrace" name)
+               (string-match-p "explain-pause-mode-report-bug" name)
+               (string-match-p "Warnings" name))
+       (send-exit-record "exit-test-debugger-invoked")
+       (unless (getenv "NODIE")
+         (kill-emacs 1))))))
+
 (defun send-value (name val)
   "Send the name/value pair to the event log. Run only inside tested code."
   (explain-pause-log--send-dgram
@@ -428,6 +454,7 @@ it is assumed `test-setup' has trapped."
   (interactive)
   "Call after-test, and then close and quit emacs. Run by SIGUSR1."
   ;; assumed defined in test file
+  (check-buffers)
   (after-test)
   (send-exit-record "exit-test-unclean")
   (explain-pause-log-off)
@@ -436,6 +463,7 @@ it is assumed `test-setup' has trapped."
 
 (defun exit-test-debugger-invoked ()
   (interactive)
+  (check-buffers)
   (send-exit-record "exit-test-unclean")
   (explain-pause-log-off)
   (unless (getenv "NODIE")

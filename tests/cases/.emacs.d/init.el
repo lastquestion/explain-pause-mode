@@ -3,4 +3,6 @@
 (load "./tests/cases/driver.el")
 (setup-test)
 (explain-pause-mode)
+(when (getenv "TESTREAD")
+  (read-event "in init" nil 0.1))
 

@@ -23,8 +23,8 @@
 ;; Free Software Foundation, Inc., 59 Temple Place - Suite 330,
 ;; Boston, MA 02111-1307, USA.
 
-;;; Test that we can boot while in a init.el. Init.el is NOT the same
-;;; as running with `-l`, unfortunately.
+;;; Further regression test on #50. Test that in init.el startup,
+;;; if read-key or another advised function called after, it works.
 
 (defun after-test ()
   t)
@@ -42,6 +42,7 @@
                 (expand-file-name default-directory))
     (setenv "HOME" homedir)
     (setenv "EMACSLOADPATH" (format "%s:" default-directory))
+    (setenv "TESTREAD" "1")
 
     (setq session (start-test
                    filename
