@@ -3108,7 +3108,8 @@ callback."
         (set-process-sentinel process original-sentinel)))))
 
 (defconst explain-pause--native-called-hooks
-  '(post-command-hook pre-command-hook))
+  '(post-command-hook pre-command-hook delayed-warnings-hook
+                      echo-area-clear-hook post-gc-hook))
 
 (defsubst explain-pause--generate-hook-wrapper (hook-func hook-list)
   "Generate a lambda wrapper for advice to wrap the function HOOK-FUNC so it
