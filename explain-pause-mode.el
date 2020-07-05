@@ -3195,6 +3195,19 @@ native code outside command loop."
             (explain-pause--advice-add-hook hook-func hook-list))))
   args)
 
+(defun explain-pause--wrap-remove-hook (args)
+  "Advise remove-hook to wrap the hook to remove if it is a lambda, so it
+can be found and removed normally."
+  (let ((hook-list (nth 0 args))
+        (hook-func (nth 1 args)))
+    (when (and (seq-contains explain-pause--native-called-hooks hook-list)
+               (functionp hook-func)
+               (not (symbolp hook-func))
+               (not (byte-code-function-p hook-func)))
+      (setf (nth 1 args)
+            (explain-pause--advice-add-hook hook-func hook-list))))
+  args)
+
 (defun explain-pause--wrap-existing-hooks-in-list (hook-kind hook-list)
   "Wrap existing hooks in HOOK-LIST with WRAP-FUNC."
   (cl-loop
@@ -3278,8 +3291,11 @@ command loop, for both the default value and all buffer local values."
                   #'explain-pause--wrap-call-interactively)
       (advice-add 'funcall-interactively :before
                   #'explain-pause--before-funcall-interactively)
+
       (advice-add 'add-hook :filter-args
                   #'explain-pause--wrap-add-hook)
+      (advice-add 'remove-hook :filter-args
+                  #'explain-pause--wrap-remove-hook)
 
       ;; OK, we're prepared to advise native functions and timers:
       (dolist (native-func native)
@@ -3395,6 +3411,8 @@ github.com/lastquestion/explain-pause-mode")
 
       (advice-remove 'add-hook
                      #'explain-pause--wrap-add-hook)
+      (advice-remove 'add-hook
+                     #'explain-pause--wrap-remove-hook)
 
       (advice-remove 'call-interactively
                      #'explain-pause--wrap-call-interactively)
