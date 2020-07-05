@@ -57,10 +57,9 @@ exit-command in the session."
       (push event event-stream)
 
       (cond
-       ((or
-             (equal "exit-test-quit-emacs" command)
-             (equal "exit-test-debugger-invoked" command)
-             (equal "exit-test-unclean" command))
+       ((and command
+             (string-match "exit-test" command)
+             (not (equal "exit-test-quit-emacs-check" command)))
         (message "... emacs terminated: %s" command)
         (setf (nth 5 (process-get process :session)) command))
        ((equal "enabled" (nth 0 event))
@@ -429,6 +428,11 @@ it is assumed `test-setup' has trapped."
     (signal-process (nth 1 session) 'sigusr1)))
 
 ;; inside tested code functions
+(defun quit-with-record (record)
+  (send-exit-record record)
+  (unless (getenv "NODIE")
+    (kill-emacs 1)))
+
 (defun check-buffers ()
   "Find any buffer with backtrace or explain-pause-mode-report-bug or
 if messages buffer has error message."
@@ -439,9 +443,16 @@ if messages buffer has error message."
      (when (or (string-match-p "backtrace" name)
                (string-match-p "explain-pause-mode-report-bug" name)
                (string-match-p "Warnings" name))
-       (send-exit-record "exit-test-debugger-invoked")
-       (unless (getenv "NODIE")
-         (kill-emacs 1))))))
+       (quit-with-record "exit-test-debugger-invoked"))))
+
+  (with-current-buffer (messages-buffer)
+    (goto-char 0)
+    (unless (re-search-forward "Debug on Error enabled globally" nil t)
+      (quit-with-record "exit-test-debug-on-error-off"))
+
+    (when (re-search-forward "error" nil t)
+      (quit-with-record "exit-test-message-error"))))
+
 
 (defun send-value (name val)
   "Send the name/value pair to the event log. Run only inside tested code."
@@ -455,23 +466,27 @@ if messages buffer has error message."
   (explain-pause-log--send-dgram
    (format "(\"enter\" \"%s\")\n" why)))
 
-(defun exit-test-quit-emacs ()
+(defun exit-test-quit-emacs-check ()
   (interactive)
   "Call after-test, and then close and quit emacs. Run by SIGUSR1."
   ;; assumed defined in test file
   (check-buffers)
   (after-test)
+  (call-interactively 'exit-test-quit-emacs))
+
+(defun exit-test-quit-emacs ()
+  (interactive)
   (send-exit-record "exit-test-unclean")
-  (explain-pause-log-off)
   (unless (getenv "NODIE")
+    (explain-pause-log-off)
     (kill-emacs)))
 
 (defun exit-test-debugger-invoked ()
   (interactive)
   (check-buffers)
   (send-exit-record "exit-test-unclean")
-  (explain-pause-log-off)
   (unless (getenv "NODIE")
+    (explain-pause-log-off)
     (kill-emacs)))
 
 (defun setup-test-boot ()
@@ -488,6 +503,6 @@ into the event stream and then quit."
               (call-interactively 'exit-test-debugger-invoked)))
   (toggle-debug-on-error)
 
-  (define-key special-event-map [sigusr1] 'exit-test-quit-emacs)
+  (define-key special-event-map [sigusr1] 'exit-test-quit-emacs-check)
 
   (explain-pause-log-to-socket (getenv "SOCKET")))

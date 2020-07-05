@@ -25,6 +25,8 @@
 
 ;;; Test that when explain-pause-mode is installed, we wrap all
 ;;; existing timers and processes. Repro case for #50
+;;; Also test that we wrap existing post-command-hooks both
+;;; global and buffer-local. Repro case for #54
 
 (setq test-process nil)
 
@@ -38,17 +40,33 @@
 
 (defun timer-sit-for (kind time)
   (sit-for time)
+  (message "timer %s" kind)
   (send-value kind "t"))
 
+(defun my-post-command ()
+  t)
+
+(defun byte-compiled-post-command ()
+  (when explain-pause-mode
+    (send-value "byte-compiled-post-command" t)))
+
 (defun before-test ()
+  (byte-compile 'byte-compiled-post-command)
+
   (setq test-process
         (make-process
          :name "test"
          :command '("cat")
          :filter 'filter-test))
   (set-process-sentinel test-process 'sentinel-test)
-  (setq timer-1 (run-with-timer 1 2 'timer-sit-for 'timer 0.5))
-  (setq timer-2 (run-with-idle-timer 0.5 0.5 'timer-sit-for 'idle-timer 1)))
+  (setq timer-1 (run-with-timer 1 1.5 'timer-sit-for 'timer 0.25))
+  (setq timer-2 (run-with-idle-timer 0.5 0.5 'timer-sit-for 'idle-timer 1))
+  (add-hook 'post-command-hook 'my-post-command)
+  (let ((avalue 4))
+    (add-hook 'post-command-hook (lambda ()
+                                   (send-value "lambda-hook" t)
+                                   avalue)))
+  (add-hook 'post-command-hook 'byte-compiled-post-command))
 
 (defun echo ()
   (interactive)
@@ -68,12 +86,12 @@
                  nil
                  '("-f" "setup-test" "-f" "before-test")))
 
-  (sleep-for 0.5)
+  (sleep-for 1)
 
   (m-x-run session "explain-pause-mode")
 
   ;; wait until timer-1 has run, then timer-2
-  (sleep-for 2.5)
+  (sleep-for 4)
 
   ;; hit the filter
   (m-x-run session "echo")
@@ -82,7 +100,11 @@
 
   (m-x-run session "end")
 
-  (sleep-for 1.0)
+  (sleep-for 0.5)
+
+  (send-key session "a") ;; force idle timer to run
+
+  (sleep-for 2)
 
   (call-after-test session)
   (wait-until-dead session))
@@ -96,6 +118,9 @@
          (idle-timer-after-enabled (get-value-between enabled-span "idle-timer"))
          (sentinel-fired-after (get-value-between enabled-span "sentinel-test"))
          (filter-fired-after (get-value-between enabled-span "filter-test"))
+         (byte-compile-hook (span-func-between enabled-span "byte-compiled-post-command"))
+         (func-hook (span-func-between enabled-span "my-post-command"))
+         (lambda-hook (span-func-between enabled-span "<closure> (arg-list: nil)"))
          (passed 0))
 
     (message-assert-not
@@ -117,5 +142,17 @@
     (message-assert
      filter-fired-after
      "Filter was wrapped after install and read-key worked")
+
+    (message-assert
+     (equal (nth 3 (caar byte-compile-hook)) "post-command-hook")
+     "Byte compiled post command hook wrapped after install")
+
+    (message-assert
+     (equal (nth 3 (caar func-hook)) "post-command-hook")
+     "Func hook post command hook wrapped after install")
+
+    (message-assert
+     (equal (nth 3 (caar lambda-hook)) "post-command-hook")
+     "Lambda post command hook wrapped after install")
 
     (kill-emacs passed)))

@@ -165,3 +165,48 @@
   (expect (explain-pause--interactive-form-needs-frame-p "Mprompt: ")
           :to-be
           t)))
+
+(defun test-function () t)
+(defun byte-compile-function () t)
+
+(describe
+ "explain-pause--advice-add-hook"
+
+ (before-all
+  (byte-compile 'byte-compile-function))
+
+ (it
+  "advises a symbol function and returns it"
+  (expect
+   (explain-pause--advice-add-hook 'test-function 'test-list)
+   :to-be
+   'test-function)
+
+  (expect
+   (advice--p (symbol-function 'test-function))
+   :to-be
+   t))
+
+ (it
+  "advises a bytecompiled function"
+  (expect
+   (explain-pause--advice-add-hook 'byte-compile-function 'test-list)
+   :to-be
+   'byte-compile-function)
+
+  (expect
+   (advice--p (symbol-function 'byte-compile-function))
+   :to-be
+   t))
+
+ (it
+  "advises a lambda"
+  (setq test-lambda (lambda () t))
+  (setq result-lambda (explain-pause--advice-add-hook test-lambda 'test-list))
+  (expect result-lambda
+          :not :to-equal
+          test-lambda)
+  (setq result2-lambda (explain-pause--advice-add-hook result-lambda 'test-list))
+  (expect result2-lambda
+          :to-equal
+          result-lambda)))

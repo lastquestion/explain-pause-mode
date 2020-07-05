@@ -84,7 +84,7 @@
 
 ;; driver code
 (defun run-test ()
-  (explain-pause-mode)
+  (explain-pause-mode--install-hooks)
   (let ((passed
          (and (it-hides-process-filters)
               (it-works-when-nil-passed))))
