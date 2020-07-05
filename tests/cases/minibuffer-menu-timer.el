@@ -28,7 +28,7 @@
 ;;; against each other.
 
 (defun before-test ()
-  t)
+  (setq explain-pause-profile-enabled nil))
 
 (defun timer-func ()
   (sleep-for 0.1))
@@ -51,6 +51,7 @@
     (send-special-key session 'quit)
     (sleep-for 0.5)
     (send-special-key session 'quit)
+    (sleep-for 0.5)
     (call-after-test session)
     (wait-until-dead session)))
 

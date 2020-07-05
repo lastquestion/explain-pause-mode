@@ -58,7 +58,8 @@ exit-command in the session."
 
       (cond
        ((and command
-            (string-match "exit-test" command))
+             (string-match "exit-test" command)
+             (not (equal "exit-test-quit-emacs-check" command)))
         (message "... emacs terminated: %s" command)
         (setf (nth 5 (process-get process :session)) command))
        ((equal "enabled" (nth 0 event))
