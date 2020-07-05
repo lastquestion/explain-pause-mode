@@ -79,6 +79,11 @@ exit-command in the session."
          (end (find-ptr-between (cons (cdr start) (cdr span)) pred-end)))
     (cons start end)))
 
+(defun found-span-p (span)
+  "Is the span not empty?"
+  (and (car span)
+       (cdr span)))
+
 (defun span (head pred-start pred-end)
   "Find the span with the first passing PRED-START and first
 passing PRED-END after that found PRED-START in ( start . end ),

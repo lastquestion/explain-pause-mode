@@ -23,3 +23,4 @@
 * Improve how `explain-pause-top` shows lambdas and closures ([#34](https://github.com/lastquestion/explain-pause-mode/issues/))
 * Fix `magit` commit locally sometimes breaking when `explain-pause` attempts to profile while already profiling ([#26](https://github.com/lastquestion/explain-pause-mode/issues/))
 * Fix `emacsclient -nw` not working ([#50](https://github.com/lastquestion/explain-pause-mode/issues/50))
+* Fix `kill-buffer` not being recorded when quitting out of command ([#58](https://github.com/lastquestion/explain-pause-mode/issues/58))
