@@ -7,6 +7,7 @@
 * Add `explain-pause-top`.
 * Add two user notification levels, `developer` and `normal`. The default is `normal`. In `normal`, `explain-pause-mode` notifies the user occasionally about slow commands. In `developer`, it always notifies the user immediately.
 * Add custom faces for `explain-pause-top`.
+* Measure code run in `post-command-hook`, `pre-command-hooks`, `post-gc-hook`, and a few other rarer hooks.
 
 #### New custom variables
 * `explain-pause-top-auto-refresh-interval`
@@ -24,3 +25,4 @@
 * Fix `magit` commit locally sometimes breaking when `explain-pause` attempts to profile while already profiling ([#26](https://github.com/lastquestion/explain-pause-mode/issues/))
 * Fix `emacsclient -nw` not working ([#50](https://github.com/lastquestion/explain-pause-mode/issues/50))
 * Fix `kill-buffer` not being recorded when quitting out of command ([#58](https://github.com/lastquestion/explain-pause-mode/issues/58))
+* Fix `flyspell` not working because of `post-command-hook` ([#54](https://github.com/lastquestion/explain-pause-mode/issues/54))
