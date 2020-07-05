@@ -2679,29 +2679,40 @@ a native frame."
       (let ((top-frame explain-pause--current-command-record))
         ;; if there is an extra frame, the top frame is the actual command-frame
         (if extra-frame
-          ;; this frame should be a frame with the command = the entry cmd
-          (if (not (and (eq (explain-pause-command-record-command top-frame)
-                            target-function)
-                        (eq (explain-pause-command-record-parent top-frame)
-                            command-frame)))
-              ;; uhoh
+            (cond
+            ;; if we entered into funcall-interactively,
+            ;; the top frame should be a frame with the command = the entry cmd
+             ((and (eq (explain-pause-command-record-command top-frame)
+                       target-function)
+                   (eq (explain-pause-command-record-parent top-frame)
+                       command-frame))
+
+              ;; top-frame = the real frame. exit:
+              (explain-pause--command-record-and-store top-frame)
+              ;; if we profiled, save it:
+              (when (explain-pause-command-record-is-profiled top-frame)
+                (explain-pause--command-record--save-and-stop-profiling top-frame))
+              (explain-pause-log--send-command-exit top-frame)
+              (explain-pause--run-measure-hook top-frame)
+
+              ;; exit the parent frame (the command-frame from this function)
+              ;; since we don't bother restarting, we don't need to pause-and-store
+              (explain-pause-log--send-command-exit command-frame)
+              (explain-pause--run-measure-hook command-frame))
+             ;; or, if we aborted out of the edit, threw, quit, whatever,
+             ;; the top frame is still the call-interactively-interactive frame:
+             ((eq top-frame command-frame)
+              ;; this is normally done in funcall-interactively before-advice,
+              ;; but instead we have to do it here:
+              (explain-pause--command-record-and-store top-frame)
+              (explain-pause-log--send-command-exit top-frame)
+              (explain-pause--run-measure-hook top-frame))
+             ;; uhoh
+             (t
               (explain-pause-report-measuring-bug
                "call-interactively extra-frame"
                top-frame
-               target-function) ;; hm, TODO polymorphic type..
-
-            ;; top-frame = the real frame. exit:
-            (explain-pause--command-record-and-store top-frame)
-            ;; if we profiled, save it:
-            (when (explain-pause-command-record-is-profiled top-frame)
-              (explain-pause--command-record--save-and-stop-profiling top-frame))
-            (explain-pause-log--send-command-exit top-frame)
-            (explain-pause--run-measure-hook top-frame)
-
-            ;; exit the parent frame (the command-frame from this function)
-            ;; since we don't bother restarting, we don't need to pause-and-store
-            (explain-pause-log--send-command-exit command-frame)
-            (explain-pause--run-measure-hook command-frame))
+               target-function))) ;; hm, TODO polymorphic type..
 
           ;; no extra-frame, top-frame = command-frame
           (if (not (eq top-frame command-frame))
