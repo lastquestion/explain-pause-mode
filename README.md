@@ -7,11 +7,12 @@
 
 ### How to use
 `explain-pause-mode` is very lightweight; you can leave it running all the time. Turn it on after requiring it:
-```
+```elisp
 (explain-pause-mode)
 ```
 
 `explain-pause-top` shows a `top`-like view of the things Emacs has been doing:
+
 <img src="https://raw.githubusercontent.com/lastquestion/explain-pause-mode/master/top.gif" height="338px">
 
 ### vNext
