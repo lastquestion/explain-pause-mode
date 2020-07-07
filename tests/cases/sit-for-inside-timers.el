@@ -70,14 +70,14 @@
 
     (message-assert
      (< (exit-measured-time (cadr non-interactive-timer)) 2)
-     "Timer non-interactive did not subtract sit-for")
+     "Timer non-interactive subtracted sit-for")
 
     (message-assert
      (< (exit-measured-time (cadr interactive-timer-1)) 2)
-     "Timer interactive did not subtract sit-for")
+     "Timer interactive subtracted sit-for")
 
     (message-assert
      (< (exit-measured-time (cadr interactive-timer-2)) 2)
-     "Timer interactive interrupted with keys did not subtract sit-for")
+     "Timer interactive interrupted with keys subtracted sit-for")
 
     (kill-emacs passed)))

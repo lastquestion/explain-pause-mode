@@ -37,6 +37,9 @@
 
 ;;; Code:
 
+(defconst explain-pause-version 0.1
+  "Explain-pause version")
+
 (require 'seq)
 (require 'profiler)
 (require 'subr-x)
@@ -2386,8 +2389,8 @@ full on the other side, an error is raised."
                'profile)))))
 
 ;; advices for all the things
-(defun explain-pause-report-measuring-bug (where current-command test-command)
-  "Ask the user to report a bug when the frames do not match"
+(defun explain-pause-report-measuring-bug (where &rest args)
+  "Ask the user to report a bug."
   ;; turn off everything we can
   (profiler-cpu-stop)
   (explain-pause-mode -1)
@@ -2396,13 +2399,18 @@ full on the other side, an error is raised."
       "explain-pause-mode-report-bug"
     (princ "Explain-pause-mode: please report this bug by creating a Github
 issue at https://github.com/lastquestion/explain-pause-mode. Explain-pause-mode
-is now _disabled_ so you can continue to hopefully use Emacs. Info follows:\n\n\n")
-    (princ (format "frames do not match in '%s'\ncurrent:\n%s\ntest:\n%s\n\n\n"
-                   where
-                   current-command
-                   test-command))
-    (princ "Backtrace:\n")
-    (backtrace)))
+is now _disabled_ so you can continue to hopefully use Emacs. Info follows:\n\n")
+    (princ (format "explain-pause version: %s\n" explain-pause-version))
+    (princ (format "emacs version: %s\n\n" emacs-version))
+    (princ (format "%s\n" where))
+    (dolist (arg args)
+      (princ arg)
+      (princ "\n"))
+    (princ "\nBacktrace:\n")
+    (mapbacktrace
+     (lambda (&rest args)
+       (apply 'backtrace--print-frame args))
+     #'explain-pause-report-measuring-bug)))
 
 (defvar explain-pause--current-command-record nil
   "The current command records representing what we are currently
@@ -2472,8 +2480,7 @@ otherwise execute BODY. This is a macro to avoid execution of WHERE unless neede
   `(if (eq explain-pause--current-command-record explain-pause-root-command-loop)
        (explain-pause-report-measuring-bug
         (format "not top level in %s" ,where)
-        explain-pause--current-command-record
-        explain-pause-root-command-loop)
+        "current" explain-pause--current-command-record)
      ,@body))
 
 (defmacro explain-pause--set-command-call (where record form &rest body)
@@ -2501,8 +2508,8 @@ protect.  After, pause-and-store the RECORD, and verify that
          (if (not (eq explain-pause--current-command-record ,record))
              (explain-pause-report-measuring-bug
               ,where
-              explain-pause--current-command-record
-              ,record)
+              "current" explain-pause--current-command-record
+              "should be equal" ,record)
            ,@body)))))
 
 (defsubst explain-pause--run-measure-hook (new-frame)
@@ -2710,16 +2717,16 @@ a native frame."
              ;; uhoh
              (t
               (explain-pause-report-measuring-bug
-               "call-interactively extra-frame"
-               top-frame
-               target-function))) ;; hm, TODO polymorphic type..
+               "call-interactively has extra-frame"
+               "top-frame" top-frame
+               "target-function" target-function)))
 
           ;; no extra-frame, top-frame = command-frame
           (if (not (eq top-frame command-frame))
               (explain-pause-report-measuring-bug
-               "call interactively"
-               top-frame
-               command-frame)
+               "call interactively frame does not match"
+               "command-frame" command-frame
+               "should be equal" top-frame)
             ;; exit command-frame:
             (explain-pause--command-record-and-store command-frame)
             ;; if we profiled, save it
