@@ -2940,9 +2940,14 @@ any."
                    current-record
                    (format "%s - %s" process-name stderr-arg))))
 
-            (process-put stderr-proc
-                         'explain-pause-process-frame
-                         stderr-process-frame))))
+            ;; this might be nil if the process didn't start, or the buffer
+            ;; didn't exist and was created, etc. let's be defensive. if the
+            ;; process is nil anyway no one can find the process any other way,
+            ;; so user code can't try to set process filters on it.
+            (when stderr-proc
+              (process-put stderr-proc
+                           'explain-pause-process-frame
+                           stderr-process-frame)))))
 
       process)))
 
