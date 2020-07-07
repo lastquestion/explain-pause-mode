@@ -2869,6 +2869,8 @@ any."
   (let* ((current-record explain-pause--current-command-record)
 
          (process-name (plist-get args :name))
+         (stderr-arg (plist-get args :stderr))
+
          ;; this represents the process itself
          (process-frame
           (explain-pause--command-record-from-parent
@@ -2916,7 +2918,36 @@ any."
         (when original-filter
           (process-put process 'explain-pause-original-filter original-filter))
         (when original-sentinel
-          (process-put process 'explain-pause-original-sentinel original-sentinel)))
+          (process-put process 'explain-pause-original-sentinel original-sentinel))
+
+        ;; if there was a stderr argument, and the stderr argument was not a
+        ;; process, then the stderr process was created in make-process
+        ;; directly calling Fmake_pipe_process in C code. Pull that newly
+        ;; made process out, and retroactively give it a process-frame.
+        ;; note that the native call does not give it filters or anything
+        ;; fancy we need to account for. (process.c)
+        ;; stderr is only supported for make-process, not make-network-process
+        ;; or make-pipe-process, but this value will be nil in those calls,
+        ;; so we can handle all cases here.
+        (when (and stderr-arg
+                   (not (processp stderr-arg)))
+          ;; exactly mirror the C code here
+          (let* ((stderr-buffer (get-buffer-create stderr-arg))
+                 (stderr-proc (get-buffer-process stderr-buffer))
+                 (stderr-process-frame
+                  (explain-pause--command-record-from-parent
+                   current-record
+                   current-record
+                   (format "%s - %s" process-name stderr-arg))))
+
+            ;; this might be nil if the process didn't start, or the buffer
+            ;; didn't exist and was created, etc. let's be defensive. if the
+            ;; process is nil anyway no one can find the process any other way,
+            ;; so user code can't try to set process filters on it.
+            (when stderr-proc
+              (process-put stderr-proc
+                           'explain-pause-process-frame
+                           stderr-process-frame)))))
 
       process)))
 

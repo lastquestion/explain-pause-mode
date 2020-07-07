@@ -26,3 +26,4 @@
 * Fix `emacsclient -nw` not working ([#50](https://github.com/lastquestion/explain-pause-mode/issues/50))
 * Fix `kill-buffer` not being recorded when quitting out of command ([#58](https://github.com/lastquestion/explain-pause-mode/issues/58))
 * Fix `flyspell` not working because of `post-command-hook` ([#54](https://github.com/lastquestion/explain-pause-mode/issues/54))
+* Fix `notmuch` not working because `make-process` can create `stderr` processes ([#64](https://github.com/lastquestion/explain-pause-mode/issues/64))
