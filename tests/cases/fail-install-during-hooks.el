@@ -23,40 +23,37 @@
 ;; Free Software Foundation, Inc., 59 Temple Place - Suite 330,
 ;; Boston, MA 02111-1307, USA.
 
-;;; Test that when you start up interactively, and we can't get a good
-;;; post-command startup, we eventually give up and print a nice
-;;; message.
+;;; Test that when you install, and the install fails for any reason,
+;;; we catch and disply the report bug page.
 
 (defun before-test ()
-  t)
-
-(defun evil-lisp ()
-  (interactive)
-
-  (explain-pause-mode)
-
-  ;; super evil, but e.g. server, some other things call
-  ;; post command hook
-  (dotimes (x 6)
-    (run-hooks 'post-command-hook)))
+  ;; make an error happen during install
+  (setf (symbol-function 'set-process-filter)
+        (lambda ()
+          (setq unbound (1+ unbound)))))
 
 (defun after-test ()
   ;; check messages that there is a good message
-  (with-current-buffer (messages-buffer)
-    (goto-char 0)
-    (send-value "message-index"
-                (re-search-forward
-                 "Unable to install .explain-pause-mode." nil t))))
+  (let ((report-buffer (get-buffer "explain-pause-mode-report-bug")))
+    (when report-buffer
+      (with-current-buffer report-buffer
+        (goto-char 0)
+        (send-value "report-bug-displayed"
+                    (re-search-forward "Installation of explain-pause-mode failed" nil t)))
+      ;; if we don't kill it the default check-buffers will fail the test
+      (kill-buffer report-buffer))))
 
 (defun run-test ()
   (setq session (start-test
                  nil
                  nil
-                 '("-f" "setup-test")))
+                 '("-f" "setup-test" "-f" "before-test")))
 
   (sleep-for 0.5)
 
-  (m-x-run session "evil-lisp")
+  (m-x-run session "explain-pause-mode")
+
+  (send-key session " ")
 
   (sleep-for 0.5)
 
@@ -70,7 +67,7 @@
      "mode not installed correctly, which is expected")
 
     (message-assert
-     (get-value event-stream "message-index")
-     "Unable to install message was printed")
+     (get-value event-stream "report-bug-displayed")
+     "report-bug was shown during failed install")
 
     (kill-emacs passed)))
