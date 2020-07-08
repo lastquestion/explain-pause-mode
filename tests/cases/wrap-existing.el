@@ -124,7 +124,7 @@
          (passed 0))
 
     (message-assert-not
-     (nth 1 (find-ptr event-stream (find-by "value" "message-index")))
+     (get-value event-stream "message-index")
      "Unable to install message was not printed")
 
     (message-assert

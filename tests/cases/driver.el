@@ -470,8 +470,8 @@ if messages buffer has error message."
   (interactive)
   "Call after-test, and then close and quit emacs. Run by SIGUSR1."
   ;; assumed defined in test file
-  (check-buffers)
   (after-test)
+  (check-buffers)
   (call-interactively 'exit-test-quit-emacs))
 
 (defun exit-test-quit-emacs ()

@@ -3389,36 +3389,41 @@ command loop, for both the default value and all buffer local values."
 emacs loop, e.g. not inside `call-interactively' or `sit-for' or any interleaved
 timers, etc. Otherwise, try again."
       (remove-hook 'post-command-hook #'explain-pause-mode--enable-hooks)
-
-      (if (> install-attempt 5)
-          (progn
-            (message "Unable to install `explain-pause-mode'. please report a bug to \
+      (condition-case err
+          (if (> install-attempt 5)
+              (progn
+                (message "Unable to install `explain-pause-mode'. please report a bug to \
 github.com/lastquestion/explain-pause-mode")
-            (setq explain-pause-mode nil))
-        (let ((top-of-loop t))
-          ;; do not install if we are not top of loop
-          ;;
-          ;; this covers init.el install or command line args, because command_loop
-          ;; calls post-command-hook as the first thing it does.
-          (mapbacktrace (lambda (_evaled func _args _flags)
-                          (unless (or (eq func 'explain-pause-mode--enable-hooks)
-                                      (eq func 'explain-pause-mode--try-enable-hooks))
-                            (setq top-of-loop nil)))
-                        #'explain-pause-mode--enable-hooks)
-          (cond
-           ((not top-of-loop)
-            ;; we were run via a timer, a call interactively, or startup, etc. etc. etc
-            ;; install on next post-command-hook.
-            ;; ignore commands until we're out of recursive edits
-            (when (eq 0 (recursion-depth))
-              (setq install-attempt (1+ install-attempt)))
-            ;; add ourselves to the end, so that all other hooks run. This way we can
-            ;; modify the list itself without worrying about the copy native code has
-            ;; in command_loop.
-            (add-hook 'post-command-hook #'explain-pause-mode--enable-hooks t))
-           (top-of-loop
-            ;; ok, we're safe:
-            (explain-pause-mode--install-hooks))))))
+                (setq explain-pause-mode nil))
+            (let ((top-of-loop t))
+              ;; do not install if we are not top of loop
+              ;;
+              ;; this covers init.el install or command line args, because command_loop
+              ;; calls post-command-hook as the first thing it does.
+              (mapbacktrace (lambda (_evaled func _args _flags)
+                              (unless (or (eq func 'explain-pause-mode--enable-hooks)
+                                          (eq func 'explain-pause-mode--try-enable-hooks))
+                                (setq top-of-loop nil)))
+                            #'explain-pause-mode--enable-hooks)
+              (cond
+               ((not top-of-loop)
+                ;; we were run via a timer, a call interactively, or startup, etc. etc. etc
+                ;; install on next post-command-hook.
+                ;; ignore commands until we're out of recursive edits
+                (when (eq 0 (recursion-depth))
+                  (setq install-attempt (1+ install-attempt)))
+                ;; add ourselves to the end, so that all other hooks run. This way we can
+                ;; modify the list itself without worrying about the copy native code has
+                ;; in command_loop.
+                (add-hook 'post-command-hook #'explain-pause-mode--enable-hooks t))
+               (top-of-loop
+                ;; ok, we're safe:
+                (explain-pause-mode--install-hooks)))))
+        (error
+         (explain-pause-report-measuring-bug
+          "Installation of explain-pause-mode failed"
+          "error"
+          err))))
 
     (defun explain-pause-mode--disable-hooks ()
       "Disable hooks installed by `explain-pause-mode--install-hooks'."
