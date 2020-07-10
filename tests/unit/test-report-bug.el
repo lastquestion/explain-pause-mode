@@ -127,7 +127,7 @@
    "prints the additional args"
    (expect
     (string-match
-     "some-record\n(.*)explain-pause-command-record(.*)\nsome-string\na happy string"
+     "some-record\n.*explain-pause-command-record.*\nsome-string\na happy string"
      the-body)
     :not :to-be nil)))
 
