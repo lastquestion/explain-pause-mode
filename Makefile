@@ -32,6 +32,9 @@ all: byte-compile tests
 byte-compile:
 	$(EMACS) $(EMACS_OPTS) -batch --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile explain-pause-mode.el
 
+lint:
+	$(EMACS) $(EMACS_OPTS) -batch --eval '(checkdoc-file "./explain-pause-mode.el")'
+
 print-emacs-version:
 	@echo "Emacs version under test: " `$(EMACS) --version | head -n 1`
 

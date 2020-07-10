@@ -25,20 +25,20 @@
 ;;; Commentary:
 
 ;; `explain-pause-mode' is a minor mode that measures how long Emacs commands
-;; take to run. `explain-pause-top' is like 'top', but for Emacs.
+;; take to run.  `explain-pause-top' is like 'top', but for Emacs.
 ;;
 ;; When a command consistently takes a long time to run, `explain-pause-mode'
-;; alerts the user and records the next time the command is slow. These "slow
+;; alerts the user and records the next time the command is slow.  These "slow
 ;; events" can be viewed in `explain-pause-top' and investigated immediately,
 ;; or summarized to be sent to developers.
 
-;; Please see README.md for commentary, documentation, etc. in the repository
+;; Please see README.md for commentary, documentation, etc.  in the repository
 ;; above.
 
 ;;; Code:
 
 (defconst explain-pause-version 0.1
-  "Explain-pause version")
+  "Explain-pause version.")
 
 (require 'seq)
 (require 'profiler)
@@ -84,41 +84,42 @@
   :group 'explain-pause)
 
 (defcustom explain-pause-top-auto-refresh-interval 2
-  "How often `explain-pause-top' mode buffers refresh themselves by default,
-in seconds. This can be a fraction of a second. If this is nil, they
-do not automatically refresh. You can control this on a per buffer basis
-by calling `explain-pause-top-auto-refresh'."
+  "How often `explain-pause-top' mode buffers refresh themselves by default, in seconds.  This can be a fractional value.
+
+If this is nil, they do not automatically refresh.  You can control this on a
+per buffer basis by calling `explain-pause-top-auto-refresh'."
   :type '(choice (number :tag "Interval (seconds)")
                  (const :tag "Never" nil))
   :group 'explain-pause-top)
 
 (defcustom explain-pause-top-click-profile-action #'switch-to-buffer-other-window
-  "The function that is called when the user clicks on the profile button in
-`explain-pause-top' buffers. The function is passed PROFILE-BUFFER, the buffer
-which holds the generated profile output. You can customize this to change the
-behavior if you wish. The default is to view the buffer using
-`switch-to-buffer-other-window'."
+  "The function that is called when the user clicks on the profile button in `explain-pause-top' buffers.
+
+The function is passed PROFILE-BUFFER, the buffer which holds the generated
+profile output.  You can customize this to change the behavior if you wish.  The
+default is to view the buffer using `switch-to-buffer-other-window'."
   :type 'function
   :group 'explain-pause-top)
 
 ;; profiling behaviors
 (defcustom explain-pause-profile-slow-threshold 3
-  "Explain-pause will profile a slow activity once it has executed slowly this
-many times."
+  "Explain-pause will profile a slow activity once it has executed slowly this many times."
   :type 'integer
   :group 'explain-pause-profiling)
 
 (defcustom explain-pause-profile-cpu-sampling-interval 200000
   "The CPU sampling interval when the profiler is activated in microseconds.
+
 The default value is 2ms."
   :type 'integer
   :group 'explain-pause-profiling)
 
 (defcustom explain-pause-profile-saved-profiles 5
-  "The number of CPU profiles to save for each command, after which the oldest
-is removed. Changes to this number apply to new commands only. If you wish,
-you may run `explain-pause-profile-clear' to clear all profiles, though
-this will not clear statistics from individual `explain-top-mode' buffers."
+  "The number of CPU profiles to save for each command, after which the oldest is removed.
+
+Changes to this number apply to new commands only.  If you wish, you may run
+`explain-pause-profile-clear' to clear all profiles, though this will not clear
+statistics from individual `explain-top-mode' buffers."
   :type 'integer
   :group 'explain-pause-profiling)
 
@@ -129,37 +130,32 @@ this will not clear statistics from individual `explain-top-mode' buffers."
 
 ;; public hooks
 (defvar explain-pause-measured-command-hook nil
-  "Functions(s) to call after a command has been measured. The functions are
-called with an explain-pause-command-record argument.
+  "Functions(s) to call after a command has been measured.
 
-These commands must be fast, because this hook is executed on every command,
-not just slow commands. You cannot give up execution in these commands in
-any way, e.g. do not call any family of functions that `sit-for', `read-key',
-etc. etc.")
+The functions are called with an `explain-pause-command-record' argument.  These
+commands must be fast, because this hook is executed on every command, not just
+slow commands.  You cannot give up execution in these commands in any way,
+e.g. do not call any family of functions that `sit-for', `read-key', etc.")
 
 ;; custom faces
 (defface explain-pause-top-slow
   '((t (:foreground "red")))
-  "The face used to highlight the slow count column when a command is slow
-(e.g. > 1 hit)."
+  "The face used to highlight the slow count column when a command is slow."
   :group 'explain-pause-top)
 
 (defface explain-pause-top-profile-heading
   '((t (:inherit warning)))
-  "The face used to highlight the profile heading for commands which have
-profiles available to view."
+  "The face used to highlight the profile heading for commands which have profiles available to view."
   :group 'explain-pause-top)
 
 (defface explain-pause-top-slow-heading
   '((t (:inherit warning)))
-  "The face used to highlight the slow times heading for commands which have
-slow times."
+  "The face used to highlight the slow times heading for commands which have slow times."
   :group 'explain-pause-top)
 
 (defface explain-pause-top-changed
   '((t (:inherit bold)))
-  "The face used to indicate that a value changed since the last refresh of the
-buffer."
+  "The face used to indicate that a value changed since the last refresh of the buffer."
   :group 'explain-pause-top)
 
 (defface explain-pause-top-active-column-header
@@ -168,15 +164,14 @@ buffer."
   :group 'explain-pause-top)
 
 (defcustom explain-pause-alert-normal-interval 15
-  "What is the minimum amount of time, in minutes, between alerts when
-`explain-pause-alert-style' is normal? You can put a fractional value if you
-wish."
+  "What is the minimum amount of time, in minutes, between alerts when `explain-pause-alert-style' is normal?
+
+You can put a fractional value if you wish."
   :type 'number
   :group 'explain-pause-alerting)
 
 (defcustom explain-pause-alert-normal-minimum-count 5
-  "How many slow events must occur before `explain-pause' alerts you when
-`explain-pause-alert-style' is normal?"
+  "How many slow events must occur before `explain-pause' alerts you when `explain-pause-alert-style' is normal?"
   :type 'integer
   :group 'explain-pause-alerting)
 
@@ -185,7 +180,7 @@ wish."
 ;; time lists are too expensive to create every single call
 ;; convert to a integer of ms.
 (defsubst explain-pause--as-ms-exact (time)
-  "Returns the TIME object in exact ms, ignoring picoseconds."
+  "Return exact ms, ignoring picoseconds represented by TIME."
   (+ (* (+ (* (nth 0 time) 65536) (nth 1 time)) 1000)
      (/ (nth 2 time) 1000)))
 
@@ -209,13 +204,15 @@ wish."
   "Generate a human readable string for a command CMD.
 
 Normally this is a symbol, when we are in a command loop, but in timers, process
-filters, etc. this might be a lambda or a bytecompiled lambda. In those cases,
-also handle if the forms are wrapped by closure. For bytecompiled code, use the
-references as the best information available. For lambdas and closures, hope
-that the argument names are clarifying. Also subrp is allowed, as we can
-generate native frames. We also allow strings for things that need special
-representatinos. Note that in elisp, symbols may have %! So e.g. this function
-may generate strings with format specifiers in them."
+filters, and so on, this might be a lambda or a bytecompiled lambda.  In those
+cases, also handle if the forms are wrapped by closure.  For bytecompiled code,
+use the references as the best information available.  For lambdas and closures,
+hope that the argument names are clarifying.  Also subrp is allowed, as we can
+generate native frames.  We also allow strings for things that need special
+representations.
+
+Note that in elisp, symbols may have %! So e.g. this function may generate
+strings with format specifiers in them."
   (cond
    ((stringp cmd) cmd)
    ((symbolp cmd) (symbol-name cmd))
@@ -288,20 +285,22 @@ blocking execution (or we think so, anyway)."
   (make-explain-pause-command-record
    :command 'root-emacs
    :depth 0)
-  "All command records that `explain-pause' tracks ultimately are rooted to this
-command entry, which represents the top level command loop that begins in
-`keyboard.c' when called from the initial `recursive_edit' from `emacs.c'.")
+  "This command-record represents the top level Emacs command loop.
+
+All commands that `explain-pause' tracks ultimately are rooted to this command
+entry.  It represents the top level command loop that begins in `keyboard.c'
+when called from the initial `recursive_edit' from `emacs.c'.")
 
 ;; profiling and slow statistics functions
 ;; TODO :equal list command
 (defvar explain-pause-profile--profile-statistics (make-hash-table)
   "A hash map of the slow commands and their statistics.
 
-This data is always gathered and stored when `explain-pause-mode' is
-active. When `explain-pause-profile-enabled' is true, profiling logs are also
-stored. Each entry is a VECTOR of values. In an effort to optimize memory
-allocations, store the slow counts inline with the rest of the object
-instead of using a cl-struct with a field of a vector.")
+This data is always gathered and stored when `explain-pause-mode' is active.
+When `explain-pause-profile-enabled' is true, profiling logs are also stored.
+Each entry is a VECTOR of values.  In an effort to optimize memory allocations,
+store the slow counts inline with the rest of the object instead of using a
+cl-struct with a field of a vector.")
 
 (defconst explain-pause-profile--statistic-defaults
   [0   ;; profile-counter
@@ -310,21 +309,22 @@ instead of using a cl-struct with a field of a vector.")
    nil ;; list-of-profiles
    0   ;; slow-count
    nil];; slow-ms-idx
-  "A constant vector of defaults used when upset to the statistics hashmap is
-cnot required.")
+  "A constant vector of defaults used when creating a new statistic entry.")
 
 (defconst explain-pause-profile--statistic-slow-count-offset
   6
   "The offset into the vector of statistic where the first slow ms is found.")
 
 (defsubst explain-pause-profile--statistic-slow-length (statistic)
-  "Return the number of slow counts available in this STATISTIC"
+  "Return the number of slow counts available in this STATISTIC."
   (- (length statistic)
      explain-pause-profile--statistic-slow-count-offset))
 
 (defsubst explain-pause-profile--statistic-profile-p (record)
-  "Whether the command represented by RECORD should be profiled. Does not create
-a new entry if the command has not been seen; in that case, returns nil."
+  "Whether the command represented by RECORD should be profiled.
+
+Does not create a new entry if the command has not been seen; in that case,
+returns nil."
   (aref (gethash (explain-pause-command-record-command record)
                  explain-pause-profile--profile-statistics
                  explain-pause-profile--statistic-defaults)
@@ -359,8 +359,10 @@ a new entry if the command has not been seen; in that case, returns nil."
         4))
 
 (defun explain-pause-profile-clear ()
-  "Clear the profiling data. Note that this does not clear profiles already visible
-in any `explain-pause-top' buffers."
+  "Clear the profiling data.
+
+Note that this does not clear profiles already visible in any
+`explain-pause-top' buffers."
   (interactive)
   (clrhash explain-pause-profile--profile-statistics))
 
@@ -370,9 +372,11 @@ in any `explain-pause-top' buffers."
   t)
 
 (defmacro explain-pause-profile--profile-get-statistic (record)
-  ;; define this as a macro because a defsubst cannot inline before the owning
-  ;; let has finished (e.g. this can't be inside the next closure and be used
-  ;; in `explain-pause-profile--profile-measured-command'
+  "Get or create the statistic for the command represented in RECORD.
+
+If it is created, use the default values in
+`explain-pause-profile--statistic-defaults'.  This is defined as a macro
+because a defsubst cannot be inlined inside the closure it was defined in."
   `(progn
      (setq command (explain-pause-command-record-command ,record))
      (setq statistic (gethash command explain-pause-profile--profile-statistics nil))
@@ -534,9 +538,9 @@ Store the profile if it was profiled."
   dirty-fields)
 
 (defun explain-pause-top--table-set-sorter (table new-sort &optional fast-flip)
-  "Change the sort function. Does not re-render.
+  "Change the sort function for TABLE to NEW-SORT.  Does not re-render.
 
-If fast-flip is set, simply reverse the entries. The new sort function
+If FAST-FLIP is set, simply reverse the entries.  The new sort function
 must actually implement the reversed order, it (and sort) are just not
 called."
   ;; note that we do not need to copy or move around prev-display-ptr as
@@ -558,10 +562,11 @@ called."
           new-sort)))
 
 (defun explain-pause-top--table-find-and-insert (table item)
-  "insert ITEM into the entries, sorted by the current sort function. If the
-item is found by the time insertion happens, return the prev item (whose cdr
-points to the item). If it is not found, return the newly added item.
-Comparison of items is by `eq'. If the new item would have been inserted at the
+  "Insert ITEM into the entries of TABLE, sorted by the current sort function.
+
+If the item is found by the time insertion happens, return the prev item (whose
+cdr points to the item).  If it is not found, return the newly added item.
+Comparison of items is by `eq'.  If the new item would have been inserted at the
 exact same place as the existing item, no insertion occurs, and nil is
 returned."
   (let* ((ptr-entry nil) ;; don't allocate it unless we absolutely need it
@@ -617,16 +622,18 @@ returned."
         ptr-entry)))
 
 (defun explain-pause-top--table-insert (table item)
-  "Insert an item into the entries. It will be inserted at the correct place
-with the current sort function.  It is expected that an item is ever only
-inserted once."
+  "Insert ITEM into the entries of TABLE.
+
+It will be inserted at the correct place with the current sort function.  It is
+expected that an item is ever only inserted once."
   (explain-pause-top--table-find-and-insert table item))
 
 (defun explain-pause-top--table-update (table item)
-  "Update an item in the entries. It will be moved to the correct place
-with the current sort function. It is more efficient to call
-`explain-pause-top--table-insert' if you know the entry is not in the
-table yet, but this will succeed even if this is not true."
+  "Update ITEM which is already in the entries of TABLE.
+
+It will be moved to the correct place with the current sort function.  It is
+more efficient to call `explain-pause-top--table-insert' if you know the entry
+is not in the table yet, but this will succeed even if this is not true."
   (let* ((prev
           (explain-pause-top--table-find-and-insert table item))
          (ptr (cdr prev)))
@@ -652,14 +659,15 @@ table yet, but this will succeed even if this is not true."
       (setcdr prev (cdr ptr)))))
 
 (defun explain-pause-top--table-clear (table)
-  "Clear all items in the table"
+  "Clear all items in the TABLE."
   ;; TODO delete all the other entries
   (setf (explain-pause-top--table-entries table) (list nil)))
 
 (defun explain-pause-top--table-initialize
     (table headers field-count)
-  "Initialize headers, field infformation, and scratch buffers for TABLE. Must
-be run in the buffer it is expected to draw in, because it also initializes
+  "Initialize HEADERS, field information, and scratch buffers for TABLE.
+
+Must be run in the buffer it is expected to draw in, because it also initializes
 header widths."
   (let* ((column-count (length headers))
          (buffer-width (+ 1 field-count column-count)))
@@ -684,15 +692,18 @@ header widths."
           (cl-map 'vector #'string-width headers))))
 
 (defun explain-pause-top--table-set-header (table idx header)
-  "Set one header to a new value. Must be run in the buffer it is expected to
-draw in, as it needs to calculate the width."
+  "Set the header at IDX in TABLE to the new value HEADER.
+
+Must be run in the buffer it is expected to draw in, as it needs to calculate
+the width."
   (setf (aref (explain-pause-top--table-header-titles table) idx) header)
   (setf (aref (explain-pause-top--table-header-widths table) idx)
         (string-width header))
   (setf (explain-pause-top--table-header-dirty table) t))
 
 (defun explain-pause-top--table-generate-offsets (fill-width widths)
-  "Return a vector of offsets for FILL-WIDTH and then all the columns in list WIDTHS.
+  "Return a vector of offsets from WIDTHS, starting at FILL-WIDTH.
+
 Columns in WIDTHS get one character padding in between each."
   (cl-loop
    for width in widths
@@ -702,8 +713,10 @@ Columns in WIDTHS get one character padding in between each."
    finally return (apply 'vector 0 offsets)))
 
 (defun explain-pause-top--table-resize-columns (table fixed-widths)
-  "Resize the columns within a table to new fixed widths given. Does NOT need to
-be run within the current buffer, as it never runs `string-width'."
+  "Resize the columns within TABLE to new FIXED-WIDTHS given.
+
+Does NOT need to be run within the current buffer, as it never runs
+`string-width'."
   (let*
       ((width (explain-pause-top--table-width table))
        (total-fixed (+ (apply #'+ fixed-widths)
@@ -752,8 +765,9 @@ be run within the current buffer, as it never runs `string-width'."
     (setf (explain-pause-top--table-header-dirty table) t)))
 
 (defun explain-pause-top--table-resize-width (table width)
-  "Resize the table by updating the width and setting the dirty width
-flag. Does not draw, nor recalculate any widths."
+  "Resize TABLE by updating the width to WIDTH and setting the dirty width flag.
+
+Does not draw, nor recalculate any widths."
   (setf (explain-pause-top--table-width table) width)
   (setf (explain-pause-top--table-needs-resize table) t))
 
@@ -761,12 +775,18 @@ flag. Does not draw, nor recalculate any widths."
   (propertize " " 'display (cons 'space (list :align-to 0)))
   ;; this is how we deal with left margins fringes and so on, as those are
   ;; pixel sized, so we can't print spaces.
-  "The display property to left align the header to the beginning of the body")
+  "The display property to left align the header to the beginning of the body.")
 
 (defun explain-pause-top--generate-header-line
     (header header-length window-scroll window-width)
-  "Generate a truncated header line. The header scrolls with the text, and
-adds '$' when there is more header either front or end."
+  "Generate a truncated header line for HEADER.
+
+HEADER-LENGTH must be given so we do not calculate string length every
+redisplay.  The header scrolls with the text, and adds '$' when there is more
+header either front or end.
+
+WINDOW-SCROLL and WINDOW-WIDTH are the current horizontal scroll and current
+window width."
   ;; TODO this should probably use the actual continuation glyph?
   ;; TODO these really need to be test cases:
 
@@ -825,10 +845,11 @@ adds '$' when there is more header either front or end."
             end-dot-str)))
 
 (defun explain-pause-top--concat-to-width (strings width separator)
-  "Concat STRINGS together with a space until WIDTH is reached, and then insert
-SEPARATOR. The width of separator counts towards the next group, not the prior
-one. At least one item will always fit in each group, even if the item is wider
-then WIDTH."
+  "Concat STRINGS together with a space until WIDTH is reached, and then insert SEPARATOR.
+
+The width of separator counts towards the next group, not the prior one.  At
+least one item will always fit in each group, even if the item is wider then
+WIDTH."
   (let* ((group-length 0)
          (reversed-final nil)
          (item-ptr strings))
@@ -866,9 +887,10 @@ then WIDTH."
     (apply 'concat (reverse reversed-final))))
 
 (defun explain-pause-top--split-at-space (string max-lengths)
-  "Split a string at max-lengths or less, if possible, at a space boundary. If
-not possible, split at (car MAX-LENGTH) - 1 and add a \\ continuation. Use up
-MAX-LENGTHS until only one remains, which becomes the final max-length for
+  "Split STRING at MAX-LENGTHS or less, if possible, at a space boundary.
+
+If not possible, split at (car MAX-LENGTH) - 1 and add a \\ continuation.  Use
+up MAX-LENGTHS until only one remains, which becomes the final max-length for
 the rest of the lines."
   (let* ((splits (split-string string " +" t))
          (current-line-length 0)
@@ -913,7 +935,7 @@ the rest of the lines."
 
 (defsubst explain-pause-top--table-item-command-overflow
   (command-column-width full-width command-string)
-  "Return nil or the (first, rest) strings for COMMAND-STRING."
+  "Split COMMAND-STRING into strings of COMMAND-COLUMN-WIDTH and then FULL-WIDTH length, or nil if it fits into the first line."
   ;; TODO this really should be renamed and moved to the command entry
   ;; area
   (if (< (length command-string)
@@ -934,12 +956,15 @@ the rest of the lines."
 (defsubst explain-pause-top--table-prepare-draw
   (entry new-data buffer-index prev-buffer-index
         column-count field-count requested-widths field-diffs)
-  "Prepare to draw ENTRY by setting the item to draw to NEW-DATA, then
-generating the converted strings from the values. Store the strings and their
-lengths into the buffer at BUFFER-INDEX, using the old values at
-PREV-BUFFER-INDEX if useful. Finally, update REQUESTED-WIDTHS and dirty-fields
-within the item with their dirtiness. FIELD-DIFFS is a temporary vector used to
-hold the difference of fields."
+  "Prepare to draw ENTRY, calculating strings and widths from NEW-DATA.
+
+Store the strings and their lengths into the buffer at BUFFER-INDEX, using the
+old values at PREV-BUFFER-INDEX if useful.  Update REQUESTED-WIDTHS and
+dirty-fields within the item with their dirtiness.  FIELD-DIFFS is a temporary
+vector used to hold the difference of fields.
+
+COLUMN-COUNT is the number of columns.  FIELD-COUNT is the number of fields
+beyond that."
   (let* ((to-draw-item (car new-data))
          (prev-draw-entry (cdr new-data))
          (dirty-fields (explain-pause-top--table-display-entry-dirty-fields entry))
@@ -1010,8 +1035,9 @@ hold the difference of fields."
          (setf (aref requested-widths field-index) field-width))))))
 
 (defun explain-pause-top--table-refresh (table)
-  "Refresh the table of items in the current buffer when requested. Note that
-the width cannot be 0."
+  "Refresh TABLE, which should be a table in the current buffer.
+
+Note that the width of TABLE cannot be 0."
   ;; this is relatively optimized never to allocate memory unless absolutely
   ;; needed. it tries to hoist lets out of tight loops and generally
   ;; preallocates memory in table-initialize.
@@ -1362,10 +1388,10 @@ that buffer.")
 to watch for resizes.")
 
 (defvar-local explain-pause-top--buffer-table nil
-  "The table for the buffer")
+  "The table for the buffer.")
 
 (defvar-local explain-pause-top--sort-column nil
-  "The column currently sorted in the table")
+  "The column currently sorted in the table.")
 
 (defvar explain-pause-top-mode-map
   (let ((map (make-sparse-keymap)))
@@ -1373,7 +1399,7 @@ to watch for resizes.")
     (define-key map "c" 'explain-pause-top-clear)
     (define-key map "a" 'explain-pause-top-auto-refresh)
     map)
-  "Keymap for `explain-pause-top' major mode")
+  "Keymap for `explain-pause-top' major mode.")
 
 ;; command-entry
 (cl-defstruct explain-pause-top--command-entry
@@ -1390,7 +1416,7 @@ to watch for resizes.")
   profiles)
 
 (defun explain-pause-top---command-entry-command-set-sorter (lhs rhs)
-  "Sort command-sets alphabetically."
+  "Sort command-set LHS against RHS alphabetically."
   ;; to sort by command, we have to convert the objects into strings, which
   ;; is expensive. TODO we should build a string mapping...
   (catch 'finished
@@ -1413,7 +1439,7 @@ to watch for resizes.")
       nil)))
 
 (defmacro explain-pause-top--command-entry-number-sorters (field-names)
-  "Generate sorters for numbers for the given FIELD-NAMES"
+  "Generate sorters for numbers for the given FIELD-NAMES."
   `(list ,@(cl-loop
        for field-name in field-names
        collect
@@ -1427,18 +1453,26 @@ to watch for resizes.")
 
 (defmacro explain-pause-top--command-entry-column-fields-compare
     (state-to-fill new-item prev-item prev-drawn-item field-diffs cases)
-  "Generate a list of statements one for each field (car) of CASES, skipping
-over nil cases, which compares the PREV and CURRENT values of that field.
+  "Fill STATE-TO-FILL by generating a list of statements from CASES.
+
+If a CASE is nil, it is skipped, but it still occupies one entry in
+STATE-To-FILL.
 
 There are two kinds of CASES.
 
-When (car) is a symbol, eq is used to check prev-val and current-val, including
-checking dirtiness equalness. If they are not equal, then if dirtiness equals,
-the prev-string is used. Otherwise, the (cdr) is called to generate the new
-string.
+When (car) is a symbol, `eq' is used to check PREV-VAL and CURRENT-VAL,
+including checking dirtiness equalness.  If it is equal, then prev-string is
+used.  Next, we check PREV-DRAWN-VAL against CURRENT-VAL, in the same way.  If
+it is equal ,then prev-drawn-val is used.  Otherwise, the (cdr) is called to
+generate the new string.
 
-When (car) is a list, then (cdr) of that list is used as the body, with no tests.
-The body must return the value of the field-diff itself."
+PREV-VAL is calculated from the PREV-ITEM using the getter based on (car).
+PREV-DRAWN-VAL is calculated from PREV-DRAW-ITEM using the getter.  CURRENT-VAL
+is calculated from NEW-ITEM using the getter.
+
+When (car) is a list, then (cdr) of that list is used as the body, with no
+tests.  The body must return the value of the field-diff itself."
+
   `(let* ((dirty (explain-pause-top--command-entry-dirty ,new-item))
           (prev-item-dirty (and ,prev-item
                                 (explain-pause-top--command-entry-dirty ,prev-item)))
@@ -1494,8 +1528,7 @@ The body must return the value of the field-diff itself."
                  (setf (,getter ,state-to-fill) field-val))))))))
 
 (defsubst explain-pause-top--propertize-if-dirty (dirty str-expr)
-  "If DIRTY is true, generate a propertized STR-EXPR with
-explain-pause-top-changed face, otherwise just return STR-EXR"
+  "If DIRTY is true, generate a propertized STR-EXPR with `explain-pause-top-changed' face, otherwise just return STR-EXR."
   (if dirty
       (propertize str-expr 'face 'explain-pause-top-changed)
     str-expr))
@@ -1508,7 +1541,7 @@ explain-pause-top-changed face, otherwise just return STR-EXR"
 
 (defconst explain-pause-top--command-entry-headers
   ["Command" "slow" "avg ms" "ms" "calls"]
-  "The header strings of a `explain-pause-top' table")
+  "The header strings of a `explain-pause-top' table.")
 
 (defconst explain-pause-top--single-profile-header
   (propertize "\n ► Profile:" 'face 'explain-pause-top-profile-heading)
@@ -1533,27 +1566,28 @@ explain-pause-top-changed face, otherwise just return STR-EXR"
   "The sentinel value that means no value is available yet for this number field.")
 
 (defsubst explain-pause-top--value-or-n/a-default (input-value)
-  "Return INPUT-VALUE or 0 if it is n/a-value"
+  "Return INPUT-VALUE or 0 if it is n/a-value."
   (if (eq input-value explain-pause-top--n/a-value)
       0
     input-value))
 
 (defmacro explain-pause-top--value-or-n/a-string (input-value &rest body)
-  "If INPUT-VALUE is `explain-pause-top--n/a-value', return 'N/A' or otherwise
-BODY"
+  "If INPUT-VALUE is `explain-pause-top--n/a-value', return 'N/A' or otherwise BODY."
   `(if (eq ,input-value explain-pause-top--n/a-value)
        "N/A"
      ,@body))
 
 (defun explain-pause-top--command-entry-compare
     (state-to-fill new-item prev-item prev-drawn-item field-diffs)
-  "Update FIELD-DIFFS, a vector, with the new strings or where to copy if
-nothing changed. Update STATE-TO-FILL, or create it if nil, with the new values
-from NEW-ITEM.
+  "Compare NEW-ITEM, PREV-ITEM, and PREV-DRAWN-ITEM.
 
-For every column, check to see if the value in PREV-ITEM matches NEW-ITEM. If it
-is, set `prev-item'. If it is not, check to see if the value in
-`prev-drawn-item' matches. If so, set `prev-drawn'. If not, finally generate a
+Update FIELD-DIFFS, a vector, with the new strings or where to copy if nothing
+changed.  Update STATE-TO-FILL, or create it if nil, with the new values from
+NEW-ITEM.
+
+For every column, check to see if the value in PREV-ITEM matches NEW-ITEM.  If
+it is, set `prev-item'.  If it is not, check to see if the value in
+PREV-DRAWN-ITEM matches.  If so, set `prev-drawn'.  If not, finally generate a
 new string.
 
 Values are considered the same only if their owning object dirtiness is also the
@@ -1705,12 +1739,14 @@ same."
                  (not (explain-pause-top---command-entry-command-set-sorter lhs rhs))))
          (explain-pause-top--command-entry-number-sorters
           (slow-count avg-ms total-ms count))))
-  "The sorter functions for each column of a `explain-pause-top' table")
+  "The sorter functions for each column of a `explain-pause-top' table.")
 
 ;; logging functions
 (defun explain-pause-mode-change-alert-style (new-style)
-  "Change the alerting style to NEW-STYLE. Note that this does not change the
-customizable variable `explain-pause-alert-style'.
+  "Change the alerting style to NEW-STYLE.
+
+Note that this does not change the customizable variable
+`explain-pause-alert-style'.
 
 NEW-STYLE can be:
 'developer, where all alerts are shown;
@@ -1807,9 +1843,9 @@ not active."
 (defcustom explain-pause-alert-style 'normal
   "How often should explain-pause alert you about slow pauses in the mini-buffer?
 
-Changing this value immediately adjusts the behavior. You can do this manually by
-calling `explain-pause-mode-change-alert-style' directly if you wish. Note that
-calling that function does not change this value."
+Changing this value immediately adjusts the behavior.  You can do this manually
+by calling `explain-pause-mode-change-alert-style' directly if you wish.  Note
+that calling that function does not change this value."
   :type '(choice (const :tag "Always" developer)
                  (const :tag "Every now and then" normal)
                  (const :tag "Never" silent))
@@ -1987,10 +2023,11 @@ is made `explain-pause-top-mode', `explain-pause-mode' is also enabled."
                explain-pause-top--buffer-window-size-changed))
 
 (defun explain-pause-top--buffer-revert (_ignoreauto _noconfirm)
+  "Buffer revert handler for an `explain-pause-top' major mode buffer."
   (explain-pause-top--buffer-refresh))
 
 (defun explain-pause-top--buffer-resize (width)
-  "resize the current table in the buffer to the WIDTH given, and then redraw it."
+  "Resize the current table in the buffer to the WIDTH given, and then redraw it."
   (explain-pause-top--table-resize-width explain-pause-top--buffer-table width)
   (explain-pause-top--buffer-refresh))
 
@@ -2020,7 +2057,7 @@ is made `explain-pause-top-mode', `explain-pause-mode' is also enabled."
     (explain-pause-top--buffer-refresh)))
 
 (defsubst explain-pause-top--buffer-upsert-entry (_ item)
-  "Upsert an item from the map of entries in a buffer."
+  "Upsert ITEM into the table of entries."
   ;; deliberately call aref twice instead of letting a new scope.
   ;; this is in a very tight loop.
   (cond
@@ -2030,7 +2067,7 @@ is made `explain-pause-top-mode', `explain-pause-mode' is also enabled."
     (explain-pause-top--table-update explain-pause-top--buffer-table item))))
 
 (defun explain-pause-top--buffer-refresh ()
-  "Refresh the current buffer - redraw the data at the current target-width"
+  "Refresh the current buffer and redraw the data at the current target-width."
   ;; first, insert all the items
   (maphash #'explain-pause-top--buffer-upsert-entry
            explain-pause-top--buffer-statistics)
@@ -2050,14 +2087,14 @@ is made `explain-pause-top-mode', `explain-pause-mode' is also enabled."
                         (cdr point-in-entry))))))))
 
 (defun explain-pause-top--buffer-window-config-changed ()
-  "Buffer-local hook run when window config changed for a window showing
-this buffer. Call `explain-pause-top--buffer-update-width-from-windows'."
+  "Buffer-local hook run when window config changed for a window showing this buffer."
   (explain-pause-top--buffer-update-width-from-windows (current-buffer)))
 
 (defun explain-pause-top--buffer-update-width-from-windows
     (buffer)
-  "Update the width of the target BUFFER, with the widest width from all the
-windows displaying it. Does not change buffer if width does not change."
+  "Update the width of BUFFER's table with the widest width of all windows displaying it.
+
+Does not change buffer if width does not change."
   (let ((table (buffer-local-value 'explain-pause-top--buffer-table buffer))
         ;; include all frames, everywhere, but don't include minibuffer
         (windows (get-buffer-window-list buffer nil t)))
@@ -2080,7 +2117,7 @@ windows displaying it. Does not change buffer if width does not change."
             (explain-pause-top--buffer-resize new-width)))))))
 
 (defun explain-pause-top--get-default-buffer ()
-  "Get or recreate the buffer for displaying explain-pause-top"
+  "Get or recreate the buffer for displaying explain-pause-top."
   (let ((buffer (get-buffer "*explain-pause-top*")))
     (unless buffer
       (setq buffer (generate-new-buffer "*explain-pause-top*"))
@@ -2089,8 +2126,10 @@ windows displaying it. Does not change buffer if width does not change."
     buffer))
 
 (defun explain-pause-top--apply-sort (column direction)
-  "Undo the header adjustment for the current sorted column and then applies
-the new header adjustment for COLUMN in DIRECTION."
+  "Sort the table by COLUMN in DIRECTION.
+
+Undo the header adjustment for the current sorted column and then applies the
+new header adjustment for the new column."
   (when explain-pause-top--sort-column
     (explain-pause-top--table-set-header
      explain-pause-top--buffer-table
@@ -2114,8 +2153,7 @@ the new header adjustment for COLUMN in DIRECTION."
   (setq-local explain-pause-top--sort-column column))
 
 (defun explain-pause-top--column-from-point ()
-  "Calculate the column of the table from the current point in the current
-buffer."
+  "Calculate the column of the table from the current point in the current buffer."
   (let* ((column-offsets (explain-pause-top--table-display-column-offsets
                           explain-pause-top--buffer-table))
          (next-bigger-index (seq-position column-offsets (current-column)
@@ -2127,9 +2165,10 @@ buffer."
        1)))
 
 (defun explain-pause-top--display-entry-from-point ()
-  "Return the display entry and relative offset left that point is within in the
-current buffer or nil if it is not within any (this can only happen if there are
-no entries at all)."
+  "Calculate the display entry and offset POINT is within.
+
+Returns nil if there are no entries under POINT (this is only possible if there
+are no entries at all)."
   (let ((display-entry-ptr (cdr (explain-pause-top--table-display-entries
                                  explain-pause-top--buffer-table)))
         (search (point))
@@ -2152,11 +2191,14 @@ no entries at all)."
       nil)))
 
 (defun explain-pause-top-sort (buffer column &optional refresh)
-  "Sort top table in the BUFFER using COLUMN, which is the 0-based
-index. Optionally, immediately refresh the buffer (causes a buffer switch). In
-interactive mode, sort the current buffer's column under point, and refreshes
-immediately. If the target buffer is not a `explain-pause-top' buffer, do
-nothing. Sorting the same column inverts the order."
+  "Sort top table in the BUFFER using COLUMN, which is the 0-based index.
+
+If REFRESH is non-nil, immediately refresh the buffer (causes a buffer switch).
+In interactive mode, sort the current buffer's column under point, and refreshes
+immediately.
+
+If the target buffer is not a `explain-pause-top' buffer, do nothing.  Sorting
+the same column inverts the order."
   (interactive
    (list (current-buffer) (explain-pause-top--column-from-point) t))
   (when (eq (buffer-local-value 'major-mode buffer) 'explain-pause-top-mode)
@@ -2176,10 +2218,10 @@ nothing. Sorting the same column inverts the order."
       (explain-pause-top--buffer-refresh-with-buffer buffer))))
 
 (defun explain-pause-top--pick-interactive-buffer ()
-  "In interactive mode, prompt the user to pick a `explain-pause-top' buffer if
-the current buffer is not already one. If there is exactly one
-`explain-pause-top' nuffer, pick it."
-  ;; if the current buffer is a explain-pause, just pick that.
+  "Interactively pick a `explain-pause-top' buffer.
+
+If the current buffer is one, return it.  If there is exactly one
+`explain-pause-top' buffer, return that.  Otherwise, ask the user to pick one."
   (if (eq major-mode 'explain-pause-top-mode)
       nil
     ;; otherwise, make a list of top buffers
@@ -2205,11 +2247,12 @@ the current buffer is not already one. If there is exactly one
 
 (defun explain-pause-top-clear (buffer &optional refresh)
   "Clear the statistics in an `explain-pause-top-mode' buffer, BUFFER.
-Optionally, REFRESH the buffer immediately, as well. if BUFFER is nil, the
-current buffer is used. In interactive mode, this function checks to see if the
-current buffer is an `explain-pause-top' buffer. If not, the user is prompted to
-select such a buffer if more then one exists. Also, in interactive mode, the
-buffer is refreshed immediately."
+
+Optionally, REFRESH the buffer immediately, as well.  If BUFFER is nil, the
+current buffer is used.  In interactive mode, this function checks to see if the
+current buffer is an `explain-pause-top' buffer.  If not, the user is prompted
+to select such a buffer if more then one exists.  Also, in interactive mode, the
+buffer is always refreshed immediately."
   (interactive
    (list (explain-pause-top--pick-interactive-buffer) t))
 
@@ -2224,12 +2267,14 @@ buffer is refreshed immediately."
       (explain-pause-top--buffer-refresh-with-buffer buffer))))
 
 (defun explain-pause-top-auto-refresh (&optional buffer interval)
-  "Turn on or off auto-refresh for the BUFFER, or the current buffer if
-nil. Does nothing if the buffer's major mode is not `explain-pause-top'. If
-INTERVAL is nil then auto-refresh is disabled, else the INTERVAL is seconds
-between refreshes. In interactive mode, if the current buffer is not a
+  "Turn on or off auto-refresh for the BUFFER, or the current buffer if nil.
+
+If INTERVAL is nil then auto-refresh is disabled, else the INTERVAL is seconds
+between refreshes.  In interactive mode, if the current buffer is not a
 `explain-pause-top', and there is more then one buffer of that type, prompt the
-user to pick which one."
+user to pick which one.
+
+Does nothing if the buffer's major mode is not `explain-pause-top'."
   (interactive
    (let ((buffer (explain-pause-top--pick-interactive-buffer))
          (interval t))
@@ -2272,9 +2317,10 @@ user to pick which one."
 (defcustom explain-pause-logging-default-log-location
   (expand-file-name "explain-pause-log.socket"
                     temporary-file-directory)
-  "The default file location for the UNIX socket that is used to send or receive
-logs. This is used when `explain-pause-log-to-socket' is given no parameter.
-If you change this value, the filename you specify must be writable by Emacs."
+  "The file location for the UNIX socket that is used to send or receive logs.
+
+This is used when `explain-pause-log-to-socket' is given no parameter.  If you
+change this value, the filename you specify must be writable by Emacs."
   :type 'string
   :group 'explain-pause-logging)
 
@@ -2286,20 +2332,26 @@ If you change this value, the filename you specify must be writable by Emacs."
 
 (defvar explain-pause-log--dgram-buffer
   (make-vector (+ 3 explain-pause-log--dgram-buffer-size) 0)
-  "The vector of temporary dgrams if the receiver is full. The firsw two items
-represent the push and pop indices. Reserve one empty slot to differentiate
-empty and full.")
+  "The vector of temporary dgrams if the receiver is full.
+
+This is a circular buffer.  The first two items represent the push and pop
+indices.  Reserve one empty slot to differentiate empty and full.")
 
 (defun explain-pause-log--missing-socket-disable ()
+  "Turn off logging and let the user know that the socket was too full."
   (explain-pause-log-off)
   (message "Explain-pause-mode stopped logging to socket. It got too full.")
   (sit-for 2)
   (message nil))
 
 (defsubst explain-pause-log--send-dgram (str)
-  "Write to the socket if it is enabled. The DGRAM code has its own special
-branch in process.c which is synchronous (it doesn't block). If the buffer is
-full on the other side, an error is raised."
+  "Write STR to the logging socket if it is enabled.
+
+The DGRAM code has its own special branch in process.c which is synchronous (it
+doesn't block).  If the buffer is full on the other side, an error is raised.
+Trap that error.  If it is full, store STR into a local buffer.
+
+If the local buffer becomes full, give up, turn off logging, and warn the user."
   (condition-case err
       (progn
         (while (not (eq (aref explain-pause-log--dgram-buffer 0)
@@ -2334,8 +2386,8 @@ full on the other side, an error is raised."
 
 (defsubst explain-pause-log--send-command-entry (entry record)
   "Send the fact that we are entering RECORD from ENTRY to the send pipe."
-     ;; try to be fast: use format directly, don't bother making an object
-     ;; and call prin1-to-string, because though that is C code, we have
+  ;; try to be fast: use format directly, don't bother making an object
+  ;; and call prin1-to-string, because though that is C code, we have
   ;; to allocate an list. try not to allocate memory instead.
   (when explain-pause-log--send-process
     (explain-pause-log--send-dgram
@@ -2355,7 +2407,7 @@ full on the other side, an error is raised."
              (explain-pause-command-record-depth record)))))
 
 (defsubst explain-pause-log--send-profile-start (record)
-  "Send the fact that we are beginning profiling to the send pipe"
+  "Send the fact that we are beginning profiling RECORD to the send pipe."
   (when explain-pause-log--send-process
     (explain-pause-log--send-dgram
      (format "(\"profile-start\" \"%s\" %s)\n"
@@ -2366,7 +2418,7 @@ full on the other side, an error is raised."
                       explain-pause-profile--profile-statistics)))))
 
 (defsubst explain-pause-log--send-profile-end (record)
-  "Send the fact that we are ending profiling to the send pipe"
+  "Send the fact that we are ending profiling RECORD to the send pipe."
   (when explain-pause-log--send-process
     (explain-pause-log--send-dgram
      (format "(\"profile-end\" \"%s\" %s)\n"
@@ -2375,7 +2427,7 @@ full on the other side, an error is raised."
              (not (eq (explain-pause-command-record-profile record) nil))))))
 
 (defsubst explain-pause-log--send-command-exit (record)
-  "Send the fact that we have finished a record to the send pipes"
+  "Send the fact that we have finished RECORD to the send pipe."
   (when explain-pause-log--send-process
     (explain-pause-log--send-dgram
      (format "(\"exit\" \"%s\" \"%s\" %s %s)\n"
@@ -2388,9 +2440,10 @@ full on the other side, an error is raised."
              (when (explain-pause-command-record-profile record)
                'profile)))))
 
-;; advices for all the things
 (defun explain-pause-report-measuring-bug (where &rest args)
-  "Ask the user to report a bug."
+  "Ask the user to report a bug.  WHERE is the execution context.
+
+ARGS will be printed in new lines before the backtrace."
   ;; turn off everything we can
   (profiler-cpu-stop)
   (explain-pause-mode -1)
@@ -2420,9 +2473,10 @@ is now _disabled_ so you can continue to hopefully use Emacs. Info follows:\n\n"
                                    #'explain-pause-report-measuring-bug))))))
 
 (defvar explain-pause--current-command-record nil
-  "The current command records representing what we are currently
-executing. This value is changed when entering / exiting `call-interactively',
-and when execution contexts switch, (e.g. timer <-> command loop).")
+  "The current command records representing what we are currently executing.
+
+This value is changed when entering / exiting `call-interactively', and when
+execution contexts switch, (e.g. timer <-> command loop).")
 
 ;; most related actions here are inline subsitutions for performance reasons
 (defsubst explain-pause--command-record-and-store (record)
@@ -2458,9 +2512,11 @@ and when execution contexts switch, (e.g. timer <-> command loop).")
   (explain-pause-log--send-profile-end record))
 
 (defsubst explain-pause--command-record-profile-p (record)
-  "Should the command-record RECORD be profiled, taking into account existing
-profiling conditions and nativeness? Calls
-`explain-pause-profile--statistic-profile-p' as part of this determination."
+  "Return if the command-record RECORD should be profiled.
+
+This takes into account profiling conditions and whether the frame is native.
+Calls `explain-pause-profile--statistic-profile-p' as part of this
+determination."
   (and explain-pause-profile-enabled
        (not (explain-pause-command-record-native record))
        (not (explain-pause-command-record-under-profile record))
@@ -2468,9 +2524,11 @@ profiling conditions and nativeness? Calls
 
 (defsubst explain-pause--command-record-from-parent
   (current-command parent command &optional native)
-  "Make a new command record from PARENT, using COMMAND, calculating all the
-other values correctly in CURRENT-COMMAND context. If NATIVE is set, mark the
-frame as native."
+  "Create a new command record for COMMAND from PARENT with CURRENT-COMMAND.
+
+PARENT is the caller of COMMAND; but CURRENT-COMMAND should be what was
+currently executing when control was transferred.  For example, timers may often
+execute in one command context but their parent should always be another."
   (make-explain-pause-command-record
    :command command
    :parent parent
@@ -2481,9 +2539,10 @@ frame as native."
    (1+ (explain-pause-command-record-depth parent))))
 
 (defmacro explain-pause--check-not-top-level (where &rest body)
-  "Check that the `explain-pause--current-command-record' is not top level aka
-`explain-pause-root-command-loop' and if it is, ask the user to report an error,
-otherwise execute BODY. This is a macro to avoid execution of WHERE unless needed."
+  "Execute BODY if the current command record is not root.
+
+If it is, ask the user to report an error.  This is a macro to avoid execution
+of WHERE unless needed."
   `(if (eq explain-pause--current-command-record explain-pause-root-command-loop)
        (explain-pause-report-measuring-bug
         (format "not top level in %s" ,where)
@@ -2491,11 +2550,10 @@ otherwise execute BODY. This is a macro to avoid execution of WHERE unless neede
      ,@body))
 
 (defmacro explain-pause--set-command-call (where record form &rest body)
-  "Set `explain-pause--current-command-record' to RECORD and update it's
-entry-snap to `current-time'. Profile if requested, around FORM with unwind
-protect.  After, pause-and-store the RECORD, and verify that
-`explain-pause--current-command-record' is still RECORD. Run BODY if so, or
-`explain-pause-report-measuring-bug' otherwise."
+  "Execute FORM, starting RECORD and pausing it after.
+
+BODY is executed after the record is paused.  If the current record does not
+match after FORM finishes, call report-but with WHERE."
   (declare (indent 1))
   `(progn
      (explain-pause-log--send-command-entry
@@ -2520,17 +2578,17 @@ protect.  After, pause-and-store the RECORD, and verify that
            ,@body)))))
 
 (defsubst explain-pause--run-measure-hook (new-frame)
-  "Finalize frame and send it to the measure hook"
+  "Finalize NEW-FRAME and send it to the measure hook."
   (setf (explain-pause-command-record-too-slow new-frame)
         (> (explain-pause-command-record-executing-time new-frame)
            explain-pause-slow-too-long-ms))
   (run-hook-with-args 'explain-pause-measured-command-hook new-frame))
 
 (defmacro explain-pause--pause-call-unpause (where new-record-form function-form)
-  "Pause current record; create a new record using NEW-RECORD-FORM;
-`explain-pause--set-command-call' FUNCTION-FORM; run
-`explain-pause-measured-command-hook'; unpause current record. `current-record'
-is bound throughout as the current record."
+  "Call FUNCTION-FORM, pushing NEW-RECORD-FORM and pausing the current record.
+
+If the frame does not pop correctly, call report-bug with WHERE.
+`current-record' is bound throughout as the current record."
   `(let ((current-record explain-pause--current-command-record))
      (explain-pause--command-record-and-store current-record)
 
@@ -2548,8 +2606,7 @@ is bound throughout as the current record."
         (setq explain-pause--current-command-record current-record)))))
 
 (defsubst explain-pause--interactive-form-needs-frame-p (form)
-  "Calculate, as quickly as possible, whether this interactive form needs
-a native frame."
+  "Calculate whether FORM, an interactive string spec, needs a native frame."
   ;; Walk through the characters and quit as early as possible.
   (cl-loop
    for char across form
@@ -2632,8 +2689,9 @@ a native frame."
 ;; `post-command-hook', which cannot guarentee matching calls (any old elisp
 ;; could do something dumb).
 (defun explain-pause--wrap-call-interactively (original-func &rest args)
-  "Advise call-interactively to track interactive execution costs and show them in
-`explain-pause'."
+  "Advise `call-interactively' to track interactive execution costs.
+
+ORIGINAL-FUNC and ARGS are the unadvised function and original arguments."
   (let ((parent explain-pause--current-command-record)
         (target-function (car args))
         (command-frame nil)
@@ -2749,8 +2807,13 @@ a native frame."
       (setq explain-pause--current-command-record parent))))
 
 (defun explain-pause--before-funcall-interactively (&rest args)
-  "Run right before `funcall-interactively' so `explain-pause' can track how
-much time the native code in `call-interatively' took."
+  "Advise `funcall-interactively'.
+
+This allows `explain-pause' to track much time the native code in
+`call-interatively' took, so we can subtract that time out of the total command
+time.
+
+ARGS is the original arguments."
   ;; nothing stops someone from directly calling this function.
   ;; Therefore check to see if the current-command-record is a native one
   ;; that is called 'call-interactively-interactive
@@ -2776,8 +2839,10 @@ much time the native code in `call-interatively' took."
         (setf (explain-pause-command-record-entry-snap real-frame) (current-time))))))
 
 (defun explain-pause--wrap-native (original-func &rest args)
-  "Advise a native function. Insert a new native command record, so we can track
-any calls back into elisp."
+  "Advise a native function, ORIGINAL-FUNC.
+
+Insert a new native command record, so we can track any calls back into elisp.
+ARGS is the original arguments."
   (explain-pause--check-not-top-level
    (format "wrap-native for %s" original-func)
    (explain-pause--pause-call-unpause
@@ -2790,6 +2855,10 @@ any calls back into elisp."
     (apply original-func args))))
 
 (defun explain-pause--wrap-completing-read-family (original-func &rest args)
+  "Wrap native functions that call `completing-read' in native code.
+
+ORIGINAL-FUNC is the unadvised function.
+ARGS is the original arguments."
   ;; read-command -> Fcompleting_read
   ;; read-function -> Fcompleting_read
   ;; read-variable -> Fcompleting_read - note called from `callint.c'
@@ -2817,8 +2886,14 @@ any calls back into elisp."
     (apply original-func args))))
 
 (defun explain-pause--wrap-read-buffer (original-func &rest args)
-  "Wrap read-buffer in particular, as it calls one of two completion functions
-depending on the arguments."
+  "Wrap `read-buffer'.
+
+`read-buffer' calls one of two different completion functions depending on the
+state of `read-buffer-function'.  Check the value and create the appropriate
+frame.
+
+ORIGINAL-FUNC is the unadvised function.
+ARGS is the original arguments."
   (explain-pause--check-not-top-level
    "read-buffer"
    (explain-pause--pause-call-unpause
@@ -2834,8 +2909,7 @@ depending on the arguments."
 ;; timer or process io hooks code
 (defun explain-pause--wrap-callback
     (parent-command-record original-cb &rest args)
-  "Wrap a callback, so that when THIS function is called, we call the original
-callback with a new command record whose parent is PARENT-COMMAND-RECORD."
+  "Wrap callback ORIGINAL-CB with a new command record based on PARENT-COMMAND-RECORD."
   ;; This function will still be called even if the mode is off if the callback
   ;; was wrapped when the mode was on. check and exit if so:
   (if (not explain-pause-mode)
@@ -2853,11 +2927,10 @@ callback with a new command record whose parent is PARENT-COMMAND-RECORD."
      (apply original-cb args))))
 
 (defun explain-pause--generate-wrapper (parent-command-record original-callback)
-  "Generate a lambda wrapper for use when we cannot pass additional parameters
-ala `run-with-timer', e.g. in `make-process' and co.
+  "Wrap ORIGINAL-CALLBACK with a command-record whose parent is PARENT-COMMAND-RECORD.
 
-PARENT-COMMAND-RECORD should describe the execution context when this wrapper
-was generated. ORIGINAL-CALLBACK is the function to be wrapped."
+This is used when we cannot pass additional parameters ala `run-with-timer', like
+in `make-process' and co."
   (lambda (&rest callback-args)
     (apply 'explain-pause--wrap-callback
            parent-command-record
@@ -2865,8 +2938,7 @@ was generated. ORIGINAL-CALLBACK is the function to be wrapped."
            callback-args)))
 
 (defun explain-pause--wrap-file-notify-add-watch (args)
-  "Advise that modifies the arguments ARGS to `file-notify-add-watch' by
-wrapping the callback"
+  "Advise `file-notify-add-watch' ARGS to wrap the callback with a command record."
   `(,@(seq-take args 2)
     ,(explain-pause--generate-wrapper
       (explain-pause--command-record-from-parent
@@ -2877,8 +2949,9 @@ wrapping the callback"
       (nth 2 args))))
 
 (defun explain-pause--wrap-make-process (original-func &rest args)
-  "Wrap the sentinel and process arguments inside ARGS to `make-process', if
-any."
+  "Wrap the sentinel, process and stderr callbacks inside ARGS to `make-process'.
+
+ORIGINAL-FUNC is the original `make-process'."
   ;; we are assuming make-process is fast enough not to subtract from current command.
   (let* ((current-record explain-pause--current-command-record)
 
@@ -2966,7 +3039,9 @@ any."
       process)))
 
 (defun explain-pause--wrap-set-process-filter-callback (orig &rest args)
-  "Advise that wraps `set-process-filter' so the callback is wrapped."
+  "Advise that wraps `set-process-filter' so the callback ORIG is wrapped.
+
+ARGS is the original arguments."
   ;; be careful to set the saved filter value AFTER the call, so if it
   ;; throws, we avoid changing it.
   (seq-let [arg-process original-callback] args
@@ -2990,7 +3065,9 @@ any."
         result))))
 
 (defun explain-pause--wrap-set-process-sentinel-callback (orig &rest args)
-  "Advise that wraps `set-process-sentinel' so the callback is wrapped."
+  "Advise that wraps `set-process-sentinel' so the callback ORIG is wrapped.
+
+ARGS is the original arguments."
   ;; be careful to set the saved sentinel value AFTER the call, so if it
   ;; throws, we avoid changing it.
   (seq-let [arg-process original-callback] args
@@ -3014,8 +3091,11 @@ any."
         result))))
 
 (defun explain-pause--wrap-get-process-filter (orig &rest args)
-  "Advise `process-filter' so it returns the unwrapped, original filter, so
-comparisions still work."
+  "Advise `process-filter' so it will return the unwrapped, original filter.
+
+This is necessary so that the advice for `set-process-filter' and
+`process-filter' appears transparent to user code.  ORIG is the unadvised
+function.  ARGS is the original arguments."
   (let ((original-filter (process-get (car args) 'explain-pause-original-filter)))
     ;; it might be nil: a default filter, or the process has not been called with
     ;; set-process-filter with our advised callback, e.g. a long lived process
@@ -3025,6 +3105,11 @@ comparisions still work."
       (apply orig args))))
 
 (defun explain-pause--wrap-get-process-sentinel (orig &rest args)
+  "Advise `process-sentinel' so it will return the unwrapped, original sentinel.
+
+This is necessary so that the advice for `set-process-sentinel' and
+`process-sentinel' appears transparent to user code.  ORIG is the unadvised
+function.  ARGS is the original arguments."
   (let ((original-sentinel (process-get (car args) 'explain-pause-original-sentinel)))
     ;; it might be nil: a default filter, or the process has not been called with
     ;; set-process-filter with our advised callback, e.g. a long lived process
@@ -3037,19 +3122,19 @@ comparisions still work."
   "The maximum depth a record chain for a timer can get.")
 
 (defsubst explain-pause--generate-timer-parent (cb record kind)
-  "Generate either a new frame for this timer callback or reuse the parent frame
-if the call is recursively to ourselves.
+  "Generate a command frame for CB of KIND whose parent is RECORD.
 
-The parent frame is only reused if it is a native frame of the right kind. In
-`explain-pause--wrap-callback, the new frames uses the *current* frame at the
-time of callback to decide whether profiling is on or not, so the state of
-profiiling of the reused frame doesn't matter.
+If possible, reuse the frame so recursive timers do not explode the command
+stack.  The parent frame is only reused if it is a native frame of the right
+kind.  In `explain-pause--wrap-callback', the new frames uses the *current*
+frame at the time of callback to decide whether profiling is on or not, so the
+state of profiiling of the reused frame doesn't matter.
 
-If the depth is too high (larger then `explain-pause--timer-frame-max-depth'
-rewind the stack to the first timer of the same kind and start from there
-again. This works for timers because we never unwind the parent stack in wrapper
-handler. If even after doing this the depth is too high, just reroot at
-emacs root."
+If the depth is too high (larger then `explain-pause--timer-frame-max-depth')
+rewind the stack to the first timer of the same kind and start from there again.
+This works for timers because we never unwind the parent stack in wrapper
+handler.  If even after doing this the depth is too high, just reroot at Emacs
+root."
   (or
    (when (eq (explain-pause-command-record-command record) cb)
      (let ((parent (explain-pause-command-record-parent record)))
@@ -3086,8 +3171,7 @@ emacs root."
     t)))
 
 (defun explain-pause--wrap-idle-timer-callback (args)
-  "Advise that modifies the arguments ARGS to `run-with-idle-timer' by wrapping
-the callback."
+  "Advise that modifies the arguments ARGS to `run-with-idle-timer' by wrapping the callback."
   `(,@(seq-take args 2)
     explain-pause--wrap-callback
     ;; make a new frame to represent the native timer, though we
@@ -3099,8 +3183,7 @@ the callback."
     ,@(seq-drop args 2)))
 
 (defun explain-pause--wrap-timer-callback (args)
-  "Advise that modifies the arguments ARGS to `run-with-timer' by wrapping the
-callback."
+  "Advise that modifies the arguments ARGS to `run-with-timer' by wrapping the callback."
   `(,@(seq-take args 2)
     explain-pause--wrap-callback
     ,(explain-pause--generate-timer-parent
@@ -3110,7 +3193,7 @@ callback."
     ,@(seq-drop args 2)))
 
 (defun explain-pause--wrap-existing-timer-list (list kind)
-  "Wrap an an existing timer list, so they are setup ready for further calls."
+  "Wrap the timers in timer list LIST with command frame of KIND."
   ;; hypothetically, we're reaching into timer internals.
   ;; YOLO!
   (dolist (timer list)
@@ -3127,12 +3210,12 @@ callback."
                               ,@original-args))))))
 
 (defun explain-pause--wrap-existing-timers ()
-  "Wrap existing timers so they are setup ready for futher calls."
+  "Wrap existing timers so they generate command records."
   (explain-pause--wrap-existing-timer-list timer-list 'timer)
   (explain-pause--wrap-existing-timer-list timer-idle-list 'idle-timer))
 
 (defun explain-pause--wrap-existing-processes ()
-  "Wrap existing processes so they are setup ready for further calls."
+  "Wrap existing processes so they generate command records."
   ;; be careful if we are being run again, e.g. enable-disable-enable;
   ;; check to see if the process has already been marked by us.
   (dolist (process (process-list))
@@ -3158,9 +3241,10 @@ callback."
                       disabled-command-function))
 
 (defsubst explain-pause--generate-hook-wrapper (hook-func hook-list)
-  "Generate a lambda wrapper for advice to wrap the function HOOK-FUNC so it
-generates a frame as HOOK-LIST when called. We grab the original symbol
-of HOOK-FUNC, so we can refer to the symbol if possible."
+  "Generate advice that wraps HOOK-FUNC with a command-frame for HOOK-LIST.
+
+We grab the original symbol of HOOK-FUNC, so we can refer to the symbol if
+possible in the generated command record."
   ;; TODO perhaps dry with explain-pause--wrap-callback and
   ;; explain-pause--lambda-hook-wrapper
   (lambda (orig-func &rest args)
@@ -3186,7 +3270,10 @@ of HOOK-FUNC, so we can refer to the symbol if possible."
        (apply orig-func args)))))
 
 (defun explain-pause--lambda-hook-wrapper (hook-func hook-list &rest args)
-  "A named function so we can find whether we have wrapped a lambda."
+  "Call HOOK-FUNC with ARGS, wrapping the call with a command frame for HOOK-LIST.
+
+This is a named function so we can determine whether we have already wrapped a
+lambda or not."
   (if (not explain-pause-mode)
       (apply hook-func args)
 
@@ -3209,8 +3296,11 @@ of HOOK-FUNC, so we can refer to the symbol if possible."
      (apply hook-func args))))
 
 (defsubst explain-pause--advice-add-hook (hook-func hook-list)
-  "Add a hook-wrapper advice for HOOK-FUNC for type HOOK-LIST, naming the
-lambda advice so we can reference it later."
+  "Add a hook-wrapper advice for HOOK-FUNC for type HOOK-LIST.
+
+If HOOK-FUNC is a symbol, use `advice-add' to wrap the function.  Otherwise,
+assume HOOK-FUNC is a lambda or another `funcall'-able thing, and wrap HOOK-FUNC
+with a new lambda."
   (cond
    ((symbolp hook-func)
     ;; directly advisable
@@ -3238,8 +3328,9 @@ lambda advice so we can reference it later."
       'seq-contains)))
 
 (defun explain-pause--wrap-add-hook (args)
-  "Advise add-hook to advise the hook itself to add a frame when called from
-native code outside command loop."
+  "Advise `add-hook' ARGS to wrap hooks for hook-lists that are called from native code.
+
+lambda hooks are wrapped with a new lambda.  Symbol functions are advised."
   (let ((hook-list (nth 0 args))
         (hook-func (nth 1 args)))
     (when (and (explain-pause--seq-contains
@@ -3250,8 +3341,10 @@ native code outside command loop."
   args)
 
 (defun explain-pause--wrap-remove-hook (args)
-  "Advise remove-hook to wrap the hook to remove if it is a lambda, so it
-can be found and removed normally."
+  "Advise `remove-hook' ARGS to wrap the hook to remove if it is a lambda.
+
+This allows `remove-hook' to correctly find and remove lambda hooks that have
+been wrapped by the advise for `add-hook`."
   (let ((hook-list (nth 0 args))
         (hook-func (nth 1 args)))
     (when (and (explain-pause--seq-contains
@@ -3263,7 +3356,7 @@ can be found and removed normally."
   args)
 
 (defun explain-pause--wrap-existing-hooks-in-list (hook-kind hook-list)
-  "Wrap existing hooks in HOOK-LIST with WRAP-FUNC."
+  "Wrap existing hooks in HOOK-LIST as HOOK-KIND commands."
   (cond
    ((listp hook-list)
     (cl-loop
@@ -3277,8 +3370,9 @@ can be found and removed normally."
     (explain-pause--advice-add-hook hook-list hook-kind))))
 
 (defun explain-pause--wrap-existing-hooks ()
-  "Wrap existing hooks in hook lists that are called from native code outside
-command loop, for both the default value and all buffer local values."
+  "Wrap existing hooks in hook lists that are called from native code.
+
+This checks both default values and all buffer local values."
   (dolist (hook-list explain-pause--native-called-hooks)
     (let ((default-list (default-value hook-list)))
       ;; the default value
@@ -3516,8 +3610,10 @@ must install itself after some time while Emacs is not doing anything."
 
 ;;;###autoload
 (defun explain-pause-top ()
-  "Show a top-like report of commands recently ran and their runtime. Returns
-the buffer."
+  "Show a top-like report of commands recently ran and their runtime.
+
+Uses the buffer '*explain-pause-top*', creating it if it does not exist.
+Returns the buffer."
   (interactive)
 
   (let ((buffer (explain-pause-top--get-default-buffer)))
@@ -3527,15 +3623,16 @@ the buffer."
 
 ;;;###autoload
 (defun explain-pause-log-to-socket (&optional file-socket)
-  "Log the event stream to a UNIX file socket, FILE-SOCKET. If FILE-SOCKET is nil,
-then the default location `explain-pause-default-log' is used. This file socket
-should already exist. It might be created by `explain-pause-socket' in another
-Emacs process, in which case `explain-mode-top-from-socket' will receive and
-present that data. Or you can simply receive the data in any other process that
-can create UNIX sockets, for example `netcat'.To turn off logging, run
-`explain-pause-log-off'.
+  "Log the event stream to a UNIX file socket, FILE-SOCKET.
 
-The stream is written as newline delimited elisp readable lines. See
+If FILE-SOCKET is nil, then the default location `explain-pause-default-log' is
+used.  This file socket should already exist.  It might be created by
+`explain-pause-socket' in another Emacs process, in which case
+`explain-mode-top-from-socket' will receive and present that data.  Or you can
+simply receive the data in any other process that can create UNIX sockets, for
+example `netcat'.  To turn off logging, run `explain-pause-log-off'.
+
+The stream is written as newline delimited elisp readable lines.  See
 `explain-pause-log--send-*' family of commands for the format of those objects.
 
 Returns the process that is connected to the socket."
