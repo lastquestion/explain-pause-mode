@@ -2407,10 +2407,17 @@ is now _disabled_ so you can continue to hopefully use Emacs. Info follows:\n\n"
       (princ arg)
       (princ "\n"))
     (princ "\nBacktrace:\n")
-    (mapbacktrace
-     (lambda (&rest args)
-       (apply 'backtrace--print-frame args))
-     #'explain-pause-report-measuring-bug)))
+    ;; emacs 27+, emacs commit 83af893fc0e7cc87c0fb0626fb48ef96e00b3f8b
+    (if (fboundp 'backtrace--print-frame)
+        (mapbacktrace
+         (lambda (&rest args)
+           (apply 'backtrace--print-frame args))
+         #'explain-pause-report-measuring-bug)
+      (require 'backtrace)
+      (declare-function backtrace-to-string "backtrace")
+      (declare-function backtrace-get-frames "backtrace")
+      (princ (backtrace-to-string (backtrace-get-frames
+                                   #'explain-pause-report-measuring-bug))))))
 
 (defvar explain-pause--current-command-record nil
   "The current command records representing what we are currently
