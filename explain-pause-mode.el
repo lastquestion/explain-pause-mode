@@ -3211,15 +3211,14 @@ of HOOK-FUNC, so we can refer to the symbol if possible."
   "Add a hook-wrapper advice for HOOK-FUNC for type HOOK-LIST, naming the
 lambda advice so we can reference it later."
   (cond
-   ((or (symbolp hook-func)
-        (byte-code-function-p hook-func))
+   ((symbolp hook-func)
     ;; directly advisable
     (advice-add hook-func :around
                 (explain-pause--generate-hook-wrapper hook-func hook-list)
                 (cons (cons 'name (format "explain-pause-wrap-hook-%s" hook-list)) nil))
     hook-func)
    (t
-    ;; ok, whateverer it is, wrap it normally and hope for the best.
+    ;; ok, whatever it is, wrap it normally and hope for the best.
     ;; it must be "funcall"-able or run-hook will have failed anyway.
     (if (and (listp hook-func)
              (listp (nth 3 hook-func))
@@ -3248,8 +3247,7 @@ can be found and removed normally."
         (hook-func (nth 1 args)))
     (when (and (seq-contains explain-pause--native-called-hooks hook-list)
                (functionp hook-func)
-               (not (symbolp hook-func))
-               (not (byte-code-function-p hook-func)))
+               (not (symbolp hook-func)))
       (setf (nth 1 args)
             (explain-pause--advice-add-hook hook-func hook-list))))
   args)
