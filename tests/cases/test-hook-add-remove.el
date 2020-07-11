@@ -35,8 +35,8 @@
 
 (defun it-adds-removes-symbols ()
   (let ((passed 0))
-    (add-hook 'post-command-hook 'test-hook)
 
+    (add-hook 'post-command-hook 'test-hook)
     (setq test-hook-run nil)
     (run-hooks 'post-command-hook)
     (message-assert
@@ -56,20 +56,36 @@
   (let* ((passed 0)
          (ran nil)
          (hook (lambda ()
-                 (setq ran t))))
+                 (setq ran t)))
+         (compiled-hook (byte-compile
+                         (lambda ()
+                           (setq byte-ran t)))))
+
+    (setq byte-ran nil)
 
     (add-hook 'post-command-hook hook)
+    (add-hook 'post-command-hook compiled-hook)
     (run-hooks 'post-command-hook)
+
     (message-assert
      ran
      "Lambda hook ran after adding")
 
+    (message-assert
+     byte-ran
+     "Lambda compiled hook ran after adding")
+
     (remove-hook 'post-command-hook hook)
+    (remove-hook 'post-command-hook compiled-hook)
     (setq ran nil)
+    (setq byte-ran nil)
     (run-hooks 'post-command-hook)
     (message-assert
      (not ran)
      "Lambda hook did not run after removing")
+    (message-assert
+     (not byte-ran)
+     "Lambda compiled hook did not run after removing")
 
     passed))
 
