@@ -3154,7 +3154,8 @@ callback."
 
 (defconst explain-pause--native-called-hooks
   '(post-command-hook pre-command-hook delayed-warnings-hook
-                      echo-area-clear-hook post-gc-hook))
+                      echo-area-clear-hook post-gc-hook
+                      disabled-command-function))
 
 (defsubst explain-pause--generate-hook-wrapper (hook-func hook-list)
   "Generate a lambda wrapper for advice to wrap the function HOOK-FUNC so it
@@ -3229,12 +3230,20 @@ lambda advice so we can reference it later."
       (lambda (&rest args)
         (apply #'explain-pause--lambda-hook-wrapper hook-func hook-list args))))))
 
+;; seq-contains deprecated emacs >27
+(eval-when-compile
+  (defalias 'explain-pause--seq-contains
+    (if (fboundp 'seq-contains-p)
+        'seq-contains-p
+      'seq-contains)))
+
 (defun explain-pause--wrap-add-hook (args)
   "Advise add-hook to advise the hook itself to add a frame when called from
 native code outside command loop."
   (let ((hook-list (nth 0 args))
         (hook-func (nth 1 args)))
-    (when (and (seq-contains explain-pause--native-called-hooks hook-list)
+    (when (and (explain-pause--seq-contains
+                explain-pause--native-called-hooks hook-list)
                (functionp hook-func))
       (setf (nth 1 args)
             (explain-pause--advice-add-hook hook-func hook-list))))
@@ -3245,7 +3254,8 @@ native code outside command loop."
 can be found and removed normally."
   (let ((hook-list (nth 0 args))
         (hook-func (nth 1 args)))
-    (when (and (seq-contains explain-pause--native-called-hooks hook-list)
+    (when (and (explain-pause--seq-contains
+                explain-pause--native-called-hooks hook-list)
                (functionp hook-func)
                (not (symbolp hook-func)))
       (setf (nth 1 args)
@@ -3254,12 +3264,17 @@ can be found and removed normally."
 
 (defun explain-pause--wrap-existing-hooks-in-list (hook-kind hook-list)
   "Wrap existing hooks in HOOK-LIST with WRAP-FUNC."
-  (cl-loop
-   for hook in-ref hook-list
-   do
-   (when (functionp hook)
-     (setf hook
-           (explain-pause--advice-add-hook hook hook-kind)))))
+  (cond
+   ((listp hook-list)
+    (cl-loop
+     for hook in-ref hook-list
+     do
+     (when (functionp hook)
+       (setf hook
+             (explain-pause--advice-add-hook hook hook-kind))))
+    hook-list)
+   (t
+    (explain-pause--advice-add-hook hook-list hook-kind))))
 
 (defun explain-pause--wrap-existing-hooks ()
   "Wrap existing hooks in hook lists that are called from native code outside

@@ -41,6 +41,7 @@
   (let ((session (start-test)))
     (wait-until-ready session)
     (m-x-run session "test-func")
+    (sleep-for 0.1)
     (send-special-key session 'quit)
     (sleep-for 1)
     (call-after-test session)
