@@ -55,6 +55,7 @@
     (m-x-run session "run-timer-interactively")
     (sleep-for 0.75)
     (send-key session "p")
+    (sleep-for 0.75)
     (call-after-test session)
     (wait-until-dead session)))
 

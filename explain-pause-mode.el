@@ -3208,6 +3208,13 @@ of HOOK-FUNC, so we can refer to the symbol if possible."
         hook-func))
      (apply hook-func args))))
 
+;; seq-contains deprecated emacs >27
+(defalias 'explain-pause--seq-contains
+  (eval-when-compile
+    (if (fboundp 'seq-contains-p)
+        'seq-contains-p
+      'seq-contains)))
+
 (defsubst explain-pause--advice-add-hook (hook-func hook-list)
   "Add a hook-wrapper advice for HOOK-FUNC for type HOOK-LIST, naming the
 lambda advice so we can reference it later."
@@ -3221,21 +3228,23 @@ lambda advice so we can reference it later."
    (t
     ;; ok, whatever it is, wrap it normally and hope for the best.
     ;; it must be "funcall"-able or run-hook will have failed anyway.
-    (if (and (listp hook-func)
-             (listp (nth 3 hook-func))
-             ;; TODO perhaps we could do some fancy pcase stuff here.
-             (equal (nth 1 (nth 3 hook-func)) '(function explain-pause--lambda-hook-wrapper)))
+    (cond
+     ((and (listp hook-func)
+           (listp (nth 3 hook-func))
+           ;; TODO perhaps we could do some fancy pcase stuff here.
+           (equal (nth 1 (nth 3 hook-func))
+                  '(function explain-pause--lambda-hook-wrapper)))
         ;; we did it already
-        hook-func
+      hook-func)
+     ((and (byte-code-function-p hook-func)
+           (equal (aref hook-func 1) "\xc2\xc3\xc0\xc1\x4\x24\x87")
+           (explain-pause--seq-contains (aref hook-func 2)
+                                        'explain-pause--lambda-hook-wrapper))
+      ;; we did it already, bytecompiled
+      hook-func)
+     (t
       (lambda (&rest args)
-        (apply #'explain-pause--lambda-hook-wrapper hook-func hook-list args))))))
-
-;; seq-contains deprecated emacs >27
-(eval-when-compile
-  (defalias 'explain-pause--seq-contains
-    (if (fboundp 'seq-contains-p)
-        'seq-contains-p
-      'seq-contains)))
+        (apply #'explain-pause--lambda-hook-wrapper hook-func hook-list args)))))))
 
 (defun explain-pause--wrap-add-hook (args)
   "Advise add-hook to advise the hook itself to add a frame when called from
