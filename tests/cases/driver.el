@@ -191,10 +191,9 @@ emacs is running at root of the project."
     (setq filename (symbol-file 'before-test)))
 
   (unless emacs-args
-    (setq emacs-args '("-nw" "-Q" ;; no window, no init
+    (setq emacs-args `("-nw" "-Q" ;; no window, no init
                       "-l"
-                      ;; TODO maybe make this calculate the paths..?
-                      "./explain-pause-mode.el"
+                      ,(getenv "TARGET")
                       "-l"
                       "./tests/cases/driver.el"
                       )))
@@ -221,7 +220,9 @@ emacs is running at root of the project."
 
     (setenv "SOCKET" socket-filename)
 
-    (message "Starting subemacs for test %s" filename)
+    (message "Starting subemacs for test %s with target %s"
+             filename
+             (getenv "TARGET"))
 
     ;; in case the previous tests crashed early
     (ignore-errors (delete-file socket-filename))

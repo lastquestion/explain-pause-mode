@@ -201,12 +201,23 @@
 
  (it
   "advises a lambda"
-  (setq test-lambda (lambda () t))
-  (setq result-lambda (explain-pause--advice-add-hook test-lambda 'test-list))
-  (expect result-lambda
-          :not :to-equal
-          test-lambda)
-  (setq result2-lambda (explain-pause--advice-add-hook result-lambda 'test-list))
-  (expect result2-lambda
-          :to-equal
-          result-lambda)))
+  (let ((call-count 0)
+        (orig-func (symbol-function 'explain-pause--lambda-hook-wrapper)))
+    (setf (symbol-function 'explain-pause--lambda-hook-wrapper)
+          (lambda (&rest args)
+            (setq call-count (1+ call-count))))
+    (setq test-lambda (lambda () t))
+    (setq result-lambda (explain-pause--advice-add-hook test-lambda 'test-list))
+    (expect result-lambda
+            :not :to-equal
+            test-lambda)
+    (funcall result-lambda)
+    (expect call-count :to-be 1)
+    (setq call-count 0)
+    (setq result2-lambda (explain-pause--advice-add-hook result-lambda 'test-list))
+    (expect result2-lambda
+            :to-equal
+            result-lambda)
+    (funcall result2-lambda)
+    (expect call-count :to-be 1)
+    (setf (symbol-function 'explain-pause--lambda-hook-wrapper) orig-func))))
