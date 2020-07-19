@@ -29,3 +29,4 @@
 * Fix `notmuch` not working because `make-process` can create `stderr` processes ([#64](https://github.com/lastquestion/explain-pause-mode/issues/64))
 * Fix `flymake` not working because `post-command-hook` did not handle compiled lambdas ([#71](https://github.com/lastquestion/explain-pause-mode/issues/71))
 * Fix `disabled-command` not working because `command-execute` calls `disabled-command-function` directly ([#73](https://github.com/lastquestion/explain-pause-mode/issues/73))
+* Fix `circe` not working because `set-process-plist` lost process command frame information ([#79](https://github.com/lastquestion/explain-pause-mode/issues/79))
