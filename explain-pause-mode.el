@@ -3211,7 +3211,7 @@ of HOOK-FUNC, so we can refer to the symbol if possible."
       (apply hook-func args)
 
     (explain-pause--pause-call-unpause
-     (format "wrap hook %s for %s" hook-func hook-list)
+     (format "wrap hook (named wrapper) %s for %s" hook-func hook-list)
      ;; it would be nice to avoid this let but in hooks people make them
      ;; re-entrant and just call them randomly. be defensive.
      (let ((parent
@@ -3371,7 +3371,8 @@ command loop, for both the default value and all buffer local values."
            read-function
            read-variable
            completing-read))
-        (install-attempt 0))
+        (install-attempt 0)
+        (is-installed nil))
 
     (defun explain-pause-mode--install-hooks ()
       "Actually install hooks for `explain-pause-mode'."
@@ -3432,8 +3433,10 @@ command loop, for both the default value and all buffer local values."
 
     (defun explain-pause-mode--try-enable-hooks ()
       "Attempt to install `explain-pause-mode' hooks."
-      (setq install-attempt 0)
-      (explain-pause-mode--enable-hooks))
+      (unless is-installed
+        (setq is-installed t)
+        (setq install-attempt 0)
+        (explain-pause-mode--enable-hooks)))
 
     (defun explain-pause-mode--enable-hooks ()
       "Install hooks for `explain-pause-mode' if it is being run at the top of the
@@ -3445,6 +3448,7 @@ timers, etc. Otherwise, try again."
               (progn
                 (message "Unable to install `explain-pause-mode'. please report a bug to \
 github.com/lastquestion/explain-pause-mode")
+                (setq is-installed nil)
                 (setq explain-pause-mode nil))
             (let ((top-of-loop t))
               ;; do not install if we are not top of loop
@@ -3478,6 +3482,7 @@ github.com/lastquestion/explain-pause-mode")
 
     (defun explain-pause-mode--disable-hooks ()
       "Disable hooks installed by `explain-pause-mode--install-hooks'."
+      (setq is-installed nil)
       (advice-remove 'file-notify-add-watch
                      #'explain-pause--wrap-file-notify-add-watch)
 
