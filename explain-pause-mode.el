@@ -3033,6 +3033,26 @@ comparisions still work."
         original-sentinel
       (apply orig args))))
 
+(defun explain-pause--wrap-set-process-plist (args)
+  "Advise set-process-plist so that command-frame information is preserved.
+
+Explain-pause-mode sets several values in the plist, which must be preserved if
+the plist is reset by user code."
+  (when (car args)
+    (let* ((proc (car args))
+           (new-plist (cadr args))
+           (existing-plist (process-plist proc)))
+      (cl-loop
+       for key in '(explain-pause-original-sentinel
+                    explain-pause-original-filter
+                    explain-pause-process-frame)
+       do
+       ;; only replace the key if it isn't already being set
+       (unless (plist-get new-plist key)
+         (plist-put new-plist key
+                    (plist-get existing-plist key))))))
+  args)
+
 (defconst explain-pause--timer-frame-max-depth 64
   "The maximum depth a record chain for a timer can get.")
 
@@ -3382,6 +3402,8 @@ command loop, for both the default value and all buffer local values."
 
       (advice-add 'process-filter :around #'explain-pause--wrap-get-process-filter)
       (advice-add 'process-sentinel :around #'explain-pause--wrap-get-process-sentinel)
+      (advice-add 'set-process-plist :filter-args
+                  #'explain-pause--wrap-set-process-plist)
 
       (dolist (callback-func callback-family)
         (advice-add (car callback-func) :filter-args (cdr callback-func)))
@@ -3467,7 +3489,7 @@ github.com/lastquestion/explain-pause-mode")
 
       (advice-remove 'process-filter #'explain-pause--wrap-get-process-filter)
       (advice-remove 'process-sentinel #'explain-pause--wrap-get-process-sentinel)
-
+      (advice-remove 'set-process-plist #'explain-pause--wrap-set-process-plist)
       (dolist (process-func make-process-family)
         (advice-remove process-func
                        #'explain-pause--wrap-make-process))
