@@ -43,28 +43,33 @@
 the stream buffer, and also parse it into the event-stream (which
 is in reverse order.) When `exit-test-quit-emacs' is found, set
 exit-command in the session."
-  ;; unless we already quit...
-  (unless (nth 5 (process-get process :session))
-    (with-current-buffer (process-get process :socket-buffer)
-      (insert string))
+  (let ((session (process-get process :session)))
+    (when (and verbose
+               (nth 5 session))
+      (message "message %s but already quit" string))
 
-    (when stream-logs
-      (princ string))
+    ;; unless we already quit...
+    (unless (nth 5 session)
+      (with-current-buffer (process-get process :socket-buffer)
+        (insert string))
 
-    (let* ((event (read string))
-           (command (nth 1 event)))
+      (when stream-logs
+        (princ (format "[%s] - %s" (current-time) string)))
 
-      (push event event-stream)
+      (let* ((event (read string))
+             (command (nth 1 event)))
 
-      (cond
-       ((and command
-             (string-match "exit-test" command)
-             (not (equal "exit-test-quit-emacs-check" command)))
-        (message "... emacs terminated: %s" command)
-        (setf (nth 5 (process-get process :session)) command))
-       ((equal "enabled" (nth 0 event))
-        (message "...mode enabled")
-        (setf (nth 6 (process-get process :session)) t))))))
+        (push event event-stream)
+
+        (cond
+         ((and command
+               (string-match "exit-test" command)
+               (not (equal "exit-test-quit-emacs-check" command)))
+          (message "... emacs terminated: %s" command)
+          (setf (nth 5 session) command))
+         ((equal "enabled" (nth 0 event))
+          (message "...mode enabled")
+          (setf (nth 6 session) t)))))))
 
 ;; utility functions for walking the event stream, which is assumed
 ;; to be in correct order (reversed from event-stream global)
@@ -428,6 +433,12 @@ it is assumed `test-setup' has trapped."
       (message "sending sigusr1 to %s" (nth 1 session)))
     (signal-process (nth 1 session) 'sigusr1)))
 
+(defun send-signal (session signal)
+  "Send signal to session."
+  (when verbose
+    (message "[%s] - signal %s" (current-time) signal))
+  (signal-process (nth 1 session) signal))
+
 ;; inside tested code functions
 (defun quit-with-record (record)
   (send-exit-record record)
@@ -506,4 +517,10 @@ into the event stream and then quit."
 
   (define-key special-event-map [sigusr1] 'exit-test-quit-emacs-check)
 
-  (explain-pause-log-to-socket (getenv "SOCKET")))
+  (explain-pause-log-to-socket (getenv "SOCKET"))
+
+  (when (getenv "VERBOSE")
+    (advice-add 'explain-pause-log--send-dgram :before
+                (lambda (&rest args)
+                  (let ((inhibit-message t))
+                    (message "send dgram %s" args))))))

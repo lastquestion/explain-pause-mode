@@ -30,3 +30,4 @@
 * Fix `flymake` not working because `post-command-hook` did not handle compiled lambdas ([#71](https://github.com/lastquestion/explain-pause-mode/issues/71))
 * Fix `disabled-command` not working because `command-execute` calls `disabled-command-function` directly ([#73](https://github.com/lastquestion/explain-pause-mode/issues/73))
 * Fix `circe` not working because `set-process-plist` lost process command frame information ([#79](https://github.com/lastquestion/explain-pause-mode/issues/79))
+* Fix button-clicks in emacs 26 not working because input-translation keymaps are not handled ([#84](https://github.com/lastquestion/explain-pause-mode/issues/84))

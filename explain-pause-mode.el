@@ -1686,7 +1686,8 @@ same."
                       (format "[%.2f ms]" (aref profile-info 0))
                       nil
                       'action #'explain-profile-top--click-profile-report
-                      'profile (aref profile-info 1)))
+                      'profile (aref profile-info 1)
+                      'follow-link t))
                    field-val)))))))))
 
   ;; copy the dirtiness separately as it's not covered in the field set
@@ -3177,19 +3178,19 @@ callback."
                       echo-area-clear-hook post-gc-hook
                       disabled-command-function))
 
-(defsubst explain-pause--generate-hook-wrapper (hook-func hook-list)
+(defsubst explain-pause--generate-cb-wrapper (cb-func cb-type)
   "Generate a lambda wrapper for advice to wrap the function HOOK-FUNC so it
 generates a frame as HOOK-LIST when called. We grab the original symbol
 of HOOK-FUNC, so we can refer to the symbol if possible."
   ;; TODO perhaps dry with explain-pause--wrap-callback and
-  ;; explain-pause--lambda-hook-wrapper
+  ;; explain-pause--lambda-cb-wrapper
   (lambda (orig-func &rest args)
     (if (not explain-pause-mode)
         (apply orig-func args)
 
       (explain-pause--pause-call-unpause
-       (format "wrap hook %s for %s" hook-func hook-list)
-       ;; it would be nice to avoid this let but in hooks people make them
+       (format "wrap hook %s for %s" cb-func cb-type)
+       ;; it would be nice to avoid this let but in cb people make them
        ;; re-entrant and just call them randomly. be defensive.
        (let ((parent
               (explain-pause--command-record-from-parent
@@ -3198,35 +3199,36 @@ of HOOK-FUNC, so we can refer to the symbol if possible."
                ;; native code outside the command loop. TODO it's possible
                ;; we can figure out more accurately?
                explain-pause-root-command-loop
-               hook-list)))
+               cb-type)))
          (explain-pause--command-record-from-parent
           parent
           parent
-          hook-func))
+          cb-func))
        (apply orig-func args)))))
 
-(defun explain-pause--lambda-hook-wrapper (hook-func hook-list &rest args)
+(defun explain-pause--lambda-cb-wrapper (cb-func cb-type &rest args)
   "A named function so we can find whether we have wrapped a lambda."
   (if (not explain-pause-mode)
-      (apply hook-func args)
+      (apply cb-func args)
 
     (explain-pause--pause-call-unpause
-     (format "wrap hook (named wrapper) %s for %s" hook-func hook-list)
+     (format "wrap hook (named wrapper) %s for %s" cb-func cb-type)
      ;; it would be nice to avoid this let but in hooks people make them
      ;; re-entrant and just call them randomly. be defensive.
      (let ((parent
             (explain-pause--command-record-from-parent
              current-record
+             ;; TODO this might be called from non-root, too
              ;; the parent is root because we are being called from
              ;; native code outside the command loop. TODO it's possible
              ;; we can figure out more accurately?
              explain-pause-root-command-loop
-             hook-list)))
+             cb-type)))
        (explain-pause--command-record-from-parent
         parent
         parent
-        hook-func))
-     (apply hook-func args))))
+        cb-func))
+     (apply cb-func args))))
 
 ;; seq-contains deprecated emacs >27
 (defalias 'explain-pause--seq-contains
@@ -3235,36 +3237,41 @@ of HOOK-FUNC, so we can refer to the symbol if possible."
         'seq-contains-p
       'seq-contains)))
 
-(defsubst explain-pause--advice-add-hook (hook-func hook-list)
-  "Add a hook-wrapper advice for HOOK-FUNC for type HOOK-LIST, naming the
+(defsubst explain-pause--advice-add-cb (cb-func cb-type)
+  "Add a hook-wrapper advice for CB for type TYPE, naming the
 lambda advice so we can reference it later."
   (cond
-   ((symbolp hook-func)
+   ((symbolp cb-func)
     ;; directly advisable
-    (advice-add hook-func :around
-                (explain-pause--generate-hook-wrapper hook-func hook-list)
-                (cons (cons 'name (format "explain-pause-wrap-hook-%s" hook-list)) nil))
-    hook-func)
+    (advice-add cb-func :around
+                (explain-pause--generate-cb-wrapper cb-func cb-type)
+                ;; it might be that a function could be in multiple hooks or callbacks
+                ;; we don't want multiple advices to be called if it is called
+                ;; so use a generic name
+                ;; this means that only one wins and we lose information, but at least
+                ;; we aren't wrong
+                '((name . "explain-pause-wrap-hook")))
+    cb-func)
    (t
     ;; ok, whatever it is, wrap it normally and hope for the best.
     ;; it must be "funcall"-able or run-hook will have failed anyway.
     (cond
-     ((and (listp hook-func)
-           (listp (nth 3 hook-func))
+     ((and (listp cb-func)
+           (listp (nth 3 cb-func))
            ;; TODO perhaps we could do some fancy pcase stuff here.
-           (equal (nth 1 (nth 3 hook-func))
-                  '(function explain-pause--lambda-hook-wrapper)))
+           (equal (nth 1 (nth 3 cb-func))
+                  '(function explain-pause--lambda-cb-wrapper)))
         ;; we did it already
-      hook-func)
-     ((and (byte-code-function-p hook-func)
-           (equal (aref hook-func 1) "\xc2\xc3\xc0\xc1\x4\x24\x87")
-           (explain-pause--seq-contains (aref hook-func 2)
-                                        'explain-pause--lambda-hook-wrapper))
+      cb-func)
+     ((and (byte-code-function-p cb-func)
+           (equal (aref cb-func 1) "\xc2\xc3\xc0\xc1\x4\x24\x87")
+           (explain-pause--seq-contains (aref cb-func 2)
+                                        'explain-pause--lambda-cb-wrapper))
       ;; we did it already, bytecompiled
-      hook-func)
+      cb-func)
      (t
       (lambda (&rest args)
-        (apply #'explain-pause--lambda-hook-wrapper hook-func hook-list args)))))))
+        (apply #'explain-pause--lambda-cb-wrapper cb-func cb-type args)))))))
 
 (defun explain-pause--wrap-add-hook (args)
   "Advise add-hook to advise the hook itself to add a frame when called from
@@ -3275,7 +3282,7 @@ native code outside command loop."
                 explain-pause--native-called-hooks hook-list)
                (functionp hook-func))
       (setf (nth 1 args)
-            (explain-pause--advice-add-hook hook-func hook-list))))
+            (explain-pause--advice-add-cb hook-func hook-list))))
   args)
 
 (defun explain-pause--wrap-remove-hook (args)
@@ -3288,7 +3295,7 @@ can be found and removed normally."
                (functionp hook-func)
                (not (symbolp hook-func)))
       (setf (nth 1 args)
-            (explain-pause--advice-add-hook hook-func hook-list))))
+            (explain-pause--advice-add-cb hook-func hook-list))))
   args)
 
 (defun explain-pause--wrap-existing-hooks-in-list (hook-kind hook-list)
@@ -3300,10 +3307,10 @@ can be found and removed normally."
      do
      (when (functionp hook)
        (setf hook
-             (explain-pause--advice-add-hook hook hook-kind))))
+             (explain-pause--advice-add-cb hook hook-kind))))
     hook-list)
    (t
-    (explain-pause--advice-add-hook hook-list hook-kind))))
+    (explain-pause--advice-add-cb hook-list hook-kind))))
 
 (defun explain-pause--wrap-existing-hooks ()
   "Wrap existing hooks in hook lists that are called from native code outside
@@ -3321,6 +3328,81 @@ command loop, for both the default value and all buffer local values."
            (explain-pause--wrap-existing-hooks-in-list
             hook-list
             local-value)))))))
+
+(defun explain-pause--wrap-define-key (args)
+  "Advise define key for the special keymaps when the translation is a function."
+  ;; TODO also could be a keymap completely
+  ;; also other kinds
+  (when (functionp (nth 2 args))
+    (let* ((map (car args))
+           (kind
+            (cond
+             ((eq map key-translation-map)
+              'key-translation-map)
+             ((eq map function-key-map)
+              'function-key-map)
+             ((eq map input-decode-map)
+              'input-decode-map)
+             ((eq map local-function-key-map)
+              'local-function-key-map)
+             (t
+              nil))))
+      (when kind
+        (setf (nth 2 args)
+              (explain-pause--advice-add-cb (nth 2 args) kind)))))
+  args)
+
+(defun explain-pause--wrap-existing-special-keymap (keymap keymap-kind)
+  "Walk a keymap and find all functions and wrap them."
+  (when (and (symbolp keymap)
+             (autoloadp (symbol-function keymap)))
+    (setq keymap (autoload-do-load (symbol-function keymap) keymap)))
+
+  (let ((map (cdr keymap)))
+    (while map
+      (if (keymapp map)
+          ;; parent
+          (explain-pause--wrap-existing-special-keymap map keymap-kind)
+        ;; binding
+        (let ((value (cdar map)))
+          (cond
+           ((keymapp value)
+            (explain-pause--wrap-existing-special-keymap value keymap-kind))
+           ;; TODO support cons ("string" . DEF)
+           ;; support cons (MAP . char)
+           ((functionp value)
+            (setf (cdar map)
+                  (explain-pause--advice-add-cb value keymap-kind))))))
+      (setq map (cdr map)))))
+
+(defun explain-pause--wrap-terminal-local-special-keymaps ()
+  "Wrap terminal local special keymaps, and record the wrapped state."
+  (explain-pause--wrap-existing-special-keymap input-decode-map 'input-decode-map)
+  (explain-pause--wrap-existing-special-keymap local-function-key-map
+                                               'local-function-key-map)
+  (set-terminal-parameter nil 'explain-pause-keymaps-hooked t))
+
+(defun explain-pause--wrap-existing-special-keymaps ()
+  "Wrap existing functions in the special keymaps that are called from native code."
+  (explain-pause--wrap-existing-special-keymap key-translation-map 'key-translation-map)
+  (explain-pause--wrap-existing-special-keymap function-key-map 'function-key-map)
+  ;; do all the existing terminals
+  (cl-loop
+   for frame in (frame-list)
+   do
+   (explain-pause--wrap-new-terminal-special-keymaps frame)))
+
+(defun explain-pause--wrap-new-terminal-special-keymaps (frame)
+  "When a new frame is created, wrap any special keymaps if it is a new terminal."
+  (let ((terminal (frame-terminal frame)))
+    (unless (terminal-parameter terminal 'explain-pause-keymaps-hooked)
+      (if (eq (selected-frame)
+              frame)
+          (explain-pause--wrap-terminal-local-special-keymaps))
+        (let ((current-frame (selected-frame)))
+          (select-frame frame t)
+          (explain-pause--wrap-terminal-local-special-keymaps)
+          (select-frame current-frame t)))))
 
 (eval-and-compile
   (let ((callback-family
@@ -3385,6 +3467,8 @@ command loop, for both the default value and all buffer local values."
                   #'explain-pause--wrap-add-hook)
       (advice-add 'remove-hook :filter-args
                   #'explain-pause--wrap-remove-hook)
+      (advice-add 'define-key :filter-args
+                  #'explain-pause--wrap-define-key)
 
       ;; OK, we're prepared to advise native functions and timers:
       (dolist (native-func native)
@@ -3424,6 +3508,11 @@ command loop, for both the default value and all buffer local values."
       (explain-pause--wrap-existing-processes)
       (explain-pause--wrap-existing-timers)
       (explain-pause--wrap-existing-hooks)
+      (explain-pause--wrap-existing-special-keymaps)
+
+      (add-hook 'after-make-frame-functions
+                #'explain-pause--wrap-new-terminal-special-keymaps
+                t) ;; append so we run after select-frame
 
       (when explain-pause-log--send-process
         (explain-pause-log--send-dgram
@@ -3483,6 +3572,10 @@ github.com/lastquestion/explain-pause-mode")
     (defun explain-pause-mode--disable-hooks ()
       "Disable hooks installed by `explain-pause-mode--install-hooks'."
       (setq is-installed nil)
+
+      (remove-hook 'after-make-frame-functions
+                   #'explain-pause--wrap-new-terminal-special-keymaps)
+
       (advice-remove 'file-notify-add-watch
                      #'explain-pause--wrap-file-notify-add-watch)
 
@@ -3508,6 +3601,9 @@ github.com/lastquestion/explain-pause-mode")
       (dolist (native-func native)
         (advice-remove native-func
                        #'explain-pause--wrap-native))
+
+      (advice-remove 'define-key
+                     #'explain-pause--wrap-define-key)
 
       (advice-remove 'add-hook
                      #'explain-pause--wrap-add-hook)
