@@ -168,9 +168,10 @@
 
 (defun test-function () t)
 (defun byte-compile-function () t)
+(defun double-trouble () t)
 
 (describe
- "explain-pause--advice-add-hook"
+ "explain-pause--advice-add-cb"
 
  (before-all
   (byte-compile 'byte-compile-function))
@@ -178,7 +179,7 @@
  (it
   "advises a symbol function and returns it"
   (expect
-   (explain-pause--advice-add-hook 'test-function 'test-list)
+   (explain-pause--advice-add-cb 'test-function 'test-list)
    :to-be
    'test-function)
 
@@ -190,7 +191,7 @@
  (it
   "advises a bytecompiled function"
   (expect
-   (explain-pause--advice-add-hook 'byte-compile-function 'test-list)
+   (explain-pause--advice-add-cb 'byte-compile-function 'test-list)
    :to-be
    'byte-compile-function)
 
@@ -202,22 +203,22 @@
  (it
   "advises a lambda"
   (let ((call-count 0)
-        (orig-func (symbol-function 'explain-pause--lambda-hook-wrapper)))
-    (setf (symbol-function 'explain-pause--lambda-hook-wrapper)
+        (orig-func (symbol-function 'explain-pause--lambda-cb-wrapper)))
+    (setf (symbol-function 'explain-pause--lambda-cb-wrapper)
           (lambda (&rest args)
             (setq call-count (1+ call-count))))
     (setq test-lambda (lambda () t))
-    (setq result-lambda (explain-pause--advice-add-hook test-lambda 'test-list))
+    (setq result-lambda (explain-pause--advice-add-cb test-lambda 'test-list))
     (expect result-lambda
             :not :to-equal
             test-lambda)
     (funcall result-lambda)
     (expect call-count :to-be 1)
     (setq call-count 0)
-    (setq result2-lambda (explain-pause--advice-add-hook result-lambda 'test-list))
+    (setq result2-lambda (explain-pause--advice-add-cb result-lambda 'test-list))
     (expect result2-lambda
             :to-equal
             result-lambda)
     (funcall result2-lambda)
     (expect call-count :to-be 1)
-    (setf (symbol-function 'explain-pause--lambda-hook-wrapper) orig-func))))
+    (setf (symbol-function 'explain-pause--lambda-cb-wrapper) orig-func))))
