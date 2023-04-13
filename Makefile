@@ -32,7 +32,7 @@ TARGET:=explain-pause-mode.el
 all: byte-compile tests
 
 byte-compile:
-	$(EMACS) $(EMACS_OPTS) -batch --eval '(setq byte-compile-error-on-warn t)' -f batch-byte-compile explain-pause-mode.el
+	$(EMACS) $(EMACS_OPTS) -batch --eval '(setq byte-compile-error-on-warn t)' --eval '(setq byte-compile-docstring-max-column 100)' -f batch-byte-compile explain-pause-mode.el
 	$(eval TARGET:=explain-pause-mode.elc)
 
 print-emacs-version:
