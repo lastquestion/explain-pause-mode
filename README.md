@@ -1,4 +1,15 @@
 ## explain-pause-mode
+
+# :bangbang::bangbang::bangbang: Deprecated / no longer supported & no active development
+I'm very sorry, but I am no longer working on or supporting this tool.
+If anyone wants to take this on, please leave a issue and let me know, or email me.
+
+I also don't know if this installs or correctly hooks things to work. The last time 
+I worked on this was 5 years ago.
+
+---
+---
+
 [See what's in development in the project board](https://github.com/lastquestion/explain-pause-mode/projects/1) | 
 [Feature requests, bug reports, issues](https://github.com/lastquestion/explain-pause-mode/issues) |
 [Changelog](https://github.com/lastquestion/explain-pause-mode/blob/master/CHANGELOG.md)
